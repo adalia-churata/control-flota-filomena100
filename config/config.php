@@ -7,11 +7,11 @@ date_default_timezone_set('America/Lima');
 // ── Base de datos ─────────────────────────────────────────────
 // InfinityFree: usa el host, usuario y BD que te dan en el panel
 // cPanel → MySQL Databases → copia los datos y ponlos aquí
-define('DB_HOST',    getenv('DB_HOST') ?: 'sql302.infinityfree.com');  // <-- CAMBIAR
-define('DB_PORT',    getenv('DB_PORT') ?: '3306');
-define('DB_NAME',    getenv('DB_NAME') ?: 'if0_42531105_filomena_100'); // <-- CAMBIAR
-define('DB_USER',    getenv('DB_USER') ?: 'if0_42531105');             // <-- CAMBIAR
-define('DB_PASS',    getenv('DB_PASS') ?: 'qzbdDB2QLnM1KoO');             // <-- CAMBIAR
+define('DB_HOST',    getenv('DB_HOST')    ?: 'localhost');
+define('DB_PORT',    getenv('DB_PORT')    ?: '3306');
+define('DB_NAME',    getenv('DB_NAME')    ?: 'filomena_100');
+define('DB_USER',    getenv('DB_USER')    ?: 'admin');
+define('DB_PASS',    getenv('DB_PASS')    ?: '12345678');
 define('DB_CHARSET', 'utf8mb4');
 define('APP_NAME',   'FleetControl Pro');
 define('APP_BASE',   _detectar_base());
@@ -19,9 +19,14 @@ define('APP_BASE',   _detectar_base());
 // ── Detectar base de ruta automáticamente ────────────────────
 // Funciona tanto en raíz (tudominio.com/) como en subcarpeta
 // (tudominio.com/flota/) sin cambiar nada más en el código.
+// ── Detectar base de ruta automáticamente ────────────────────
 function _detectar_base(): string {
     $script = $_SERVER['SCRIPT_NAME'] ?? '/index.php';
     $dir    = rtrim(dirname($script), '/\\');
+    // Si la llamada viene de dentro de /api, subimos un nivel a la raíz del proyecto
+    if ($dir === '/api' || str_ends_with($dir, '/api')) {
+        $dir = rtrim(dirname($dir), '/\\');
+    }
     return ($dir === '.' || $dir === '/') ? '' : $dir;
 }
 
