@@ -1354,7 +1354,6 @@ if($r0==='procesos'){
 }
 
 jout(['error'=>'Endpoint no encontrado','path'=>implode('/',$s)],404);
-}
 
 function reg_kardex_ge(int $id_u,string $tipo,float $gll,?int $id_comb,string $obs,string $fecha=''):void{
     // El bidon es compartido: el saldo es el ultimo saldo global de todos los GE
