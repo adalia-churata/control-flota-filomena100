@@ -1,0 +1,31 @@
+Options -Indexes
+RewriteEngine On
+
+# ── RewriteBase: ajustar según dónde se instale ──────────────
+# En InfinityFree la raíz del dominio ya apunta a /htdocs/
+# Si subes los archivos directamente a /htdocs/ → RewriteBase /
+# Si los subes a /htdocs/flota/ → RewriteBase /flota/
+# CAMBIA ESTA LÍNEA según tu caso:
+RewriteBase /
+
+# ── Bloquear acceso directo a config/ ────────────────────────
+RewriteRule ^config(/.*)?$ - [F,L]
+
+# ── No redirigir archivos/directorios reales ─────────────────
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+
+# ── Todo lo demás va a index.php ─────────────────────────────
+RewriteRule ^ index.php [QSA,L]
+
+# ── Headers de seguridad ─────────────────────────────────────
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "SAMEORIGIN"
+</IfModule>
+
+# ── PHP: desactivar display de errores en producción ─────────
+<IfModule mod_php.c>
+    php_flag display_errors Off
+    php_value error_reporting 0
+</IfModule>
