@@ -652,7 +652,7 @@ if($r0==='ge'){
             'factor_carga'     => $fc,
             'kwh_estimados'    => $kwh,
             'kardex_registrado'=> $gllKardex > 0,
-            'saldo_bidon'      => (float)(qval('SELECT saldo_gll FROM kardex_combustible ORDER BY fecha DESC,id_kardex DESC LIMIT 1')??0),
+            'saldo_bidon'      => (float)(qval('SELECT saldo_gll FROM kardex_combustible ORDER BY id_kardex DESC LIMIT 1')??0),
         ], 201);
     }
     if($r1==='kardex')jout(qall('SELECT k.*,cc.nro_comprobante FROM kardex_combustible k LEFT JOIN compra_combustible cc ON k.id_combustible=cc.id_combustible WHERE k.id_unidad=? ORDER BY k.fecha DESC LIMIT 100',[gget('id_unidad')??0]));
@@ -678,7 +678,7 @@ if($r0==='ge'){
             qrows('UPDATE kardex_combustible SET saldo_gll=? WHERE id_kardex=?', [round($sal,2), $mv['id_kardex']]);
         }
 
-        $saldo_final = (float)(qval('SELECT saldo_gll FROM kardex_combustible ORDER BY fecha DESC,id_kardex DESC LIMIT 1') ?? 0);
+        $saldo_final = (float)(qval('SELECT saldo_gll FROM kardex_combustible ORDER BY id_kardex DESC LIMIT 1') ?? 0);
         jout(['ok'=>true,'eliminados'=>$n_del,'movimientos'=>count($movs),'saldo_final'=>$saldo_final]);
     }
 
@@ -812,7 +812,7 @@ if($r0==='ge'){
             qrows('UPDATE kardex_combustible SET saldo_gll=? WHERE id_kardex=?', [round($sal,2), $mv['id_kardex']]);
         }
 
-        $saldo_final = (float)(qval('SELECT saldo_gll FROM kardex_combustible ORDER BY fecha DESC,id_kardex DESC LIMIT 1')??0);
+        $saldo_final = (float)(qval('SELECT saldo_gll FROM kardex_combustible ORDER BY id_kardex DESC LIMIT 1')??0);
         jout(['ok'=>true,'entradas'=>$n_entradas,'salidas'=>$n_salidas,'saldo_final'=>$saldo_final,'total_movs'=>count($movs)]);
     }    }
 
@@ -821,12 +821,9 @@ if($r0==='ge'){
         // El saldo real = último saldo del kardex de cualquier GE (todos comparten el mismo bidón)
         $id=gget('id_unidad');
 
-        // Si viene id_unidad, buscar ese; si no, buscar el último movimiento global
-        if($id){
-            $row=qone('SELECT saldo_gll,fecha FROM kardex_combustible WHERE id_unidad=? ORDER BY fecha DESC,id_kardex DESC LIMIT 1',[$id]);
-        } else {
-            $row=qone('SELECT saldo_gll,fecha FROM kardex_combustible ORDER BY fecha DESC,id_kardex DESC LIMIT 1');
-        }
+        // El saldo correcto es el del registro con mayor id_kardex (último insertado)
+        // NO ordenar por fecha ya que puede haber registros con misma fecha
+        $row=qone('SELECT saldo_gll,fecha FROM kardex_combustible ORDER BY id_kardex DESC LIMIT 1');
         $saldo=(float)($row['saldo_gll']??0);
 
         // Cuántos galones se necesitan para 7 días (basado en consumo promedio de la última semana)
@@ -1357,7 +1354,7 @@ jout(['error'=>'Endpoint no encontrado'],404);
 
 function reg_kardex_ge(int $id_u,string $tipo,float $gll,?int $id_comb,string $obs,string $fecha=''):void{
     // El bidon es compartido: el saldo es el ultimo saldo global de todos los GE
-    $ul=qone('SELECT saldo_gll FROM kardex_combustible ORDER BY fecha DESC,id_kardex DESC LIMIT 1');
+    $ul=qone('SELECT saldo_gll FROM kardex_combustible ORDER BY id_kardex DESC LIMIT 1');
     $saldo=(float)($ul['saldo_gll']??0);
     $nuevo=$tipo==='ENTRADA'?$saldo+$gll:$saldo-$gll;
     $f = $fecha!=='' ? $fecha : date('Y-m-d H:i:s');
