@@ -850,7 +850,6 @@ if($r0==='ge'){
         $eq=qall('SELECT po.*,ep.nombre_equipo,ep.proceso,ep.hp,ep.kWh_hora,ROUND(ep.kWh_hora*po.horas_trabajo,2) AS kwh_consumidos,t.nombre_completo AS registrador_nombre FROM procesos_operacion po JOIN equipos_proceso ep ON po.id_equipo=ep.id_equipo LEFT JOIN trabajadores t ON po.id_trabajador=t.id_trabajador WHERE po.id_registro=? ORDER BY ep.kWh_hora DESC',[(int)$r2]);
         jout(array_merge($base,['equipos_activos'=>$eq]));
     }
-}
 
 // ════════════════════════════════════════════════════════════
 // MANTENIMIENTO
@@ -1354,6 +1353,7 @@ if($r0==='procesos'){
 }
 
 jout(['error'=>'Endpoint no encontrado'],404);
+}
 
 function reg_kardex_ge(int $id_u,string $tipo,float $gll,?int $id_comb,string $obs,string $fecha=''):void{
     // El bidon es compartido: el saldo es el ultimo saldo global de todos los GE
