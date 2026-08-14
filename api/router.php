@@ -349,9 +349,10 @@ if($r0==='compras'){
                         // Actualizar galones y recalcular saldos
                         qrows('UPDATE kardex_combustible SET galones=?,observacion=? WHERE id_kardex=?',
                             [$cant,'Compra '.($d['tipo_comprobante']??'').' '.($d['nro_comprobante']??''),$kex['id_kardex']]);
-                        // Recalcular saldos en cadena para kardex_combustible
-                        $kmovs=qall('SELECT id_kardex,tipo_movimiento,galones FROM kardex_combustible ORDER BY fecha ASC,id_kardex ASC');
-                        $ksal=0;
+                        // Recalcular saldos solo desde ese id en adelante
+                        $saldo_prev_k=qone('SELECT saldo_gll FROM kardex_combustible WHERE id_kardex < ? ORDER BY id_kardex DESC LIMIT 1',[$kex['id_kardex']]);
+                        $ksal=(float)($saldo_prev_k['saldo_gll']??0);
+                        $kmovs=qall('SELECT id_kardex,tipo_movimiento,galones FROM kardex_combustible WHERE id_kardex >= ? ORDER BY id_kardex ASC',[$kex['id_kardex']]);
                         foreach($kmovs as $km){
                             $ksal+=$km['tipo_movimiento']==='ENTRADA'?(float)$km['galones']:-(float)$km['galones'];
                             qrows('UPDATE kardex_combustible SET saldo_gll=? WHERE id_kardex=?',[round($ksal,2),$km['id_kardex']]);
@@ -521,8 +522,10 @@ if($r0==='ge'){
             // Ya existía registro en kardex — actualizar galones y recalcular saldos
             if(abs($gllKardexNew-$gllKardexAnt)>0.01){
                 qrows('UPDATE kardex_combustible SET galones=? WHERE id_kardex=?',[$gllKardexNew,$kex['id_kardex']]);
-                $kmovs=qall('SELECT id_kardex,tipo_movimiento,galones FROM kardex_combustible ORDER BY fecha ASC,id_kardex ASC');
-                $ksal=0;
+                // Recalcular saldos solo desde ese id_kardex en adelante
+                $saldo_prev=qone('SELECT saldo_gll FROM kardex_combustible WHERE id_kardex < ? ORDER BY id_kardex DESC LIMIT 1',[$kex['id_kardex']]);
+                $ksal=(float)($saldo_prev['saldo_gll']??0);
+                $kmovs=qall('SELECT id_kardex,tipo_movimiento,galones FROM kardex_combustible WHERE id_kardex >= ? ORDER BY id_kardex ASC',[$kex['id_kardex']]);
                 foreach($kmovs as $km){
                     $ksal+=$km['tipo_movimiento']==='ENTRADA'?(float)$km['galones']:-(float)$km['galones'];
                     qrows('UPDATE kardex_combustible SET saldo_gll=? WHERE id_kardex=?',[round($ksal,2),$km['id_kardex']]);
@@ -547,13 +550,15 @@ if($r0==='ge'){
             if($gll>0){
                 $kex=qone("SELECT id_kardex FROM kardex_combustible WHERE id_unidad=? AND tipo_movimiento='SALIDA' AND observacion LIKE ? ORDER BY id_kardex DESC LIMIT 1",[(int)$reg['id_unidad'],'%turno '.$reg['fecha'].'%']);
                 if($kex){
-                    qrows('DELETE FROM kardex_combustible WHERE id_kardex=?',[$kex['id_kardex']]);
-                    // Recalcular saldos
-                    $kmovs=qall('SELECT id_kardex,tipo_movimiento,galones FROM kardex_combustible ORDER BY fecha ASC,id_kardex ASC');
-                    $ksal=0;
-                    foreach($kmovs as $km){
-                        $ksal+=$km['tipo_movimiento']==='ENTRADA'?(float)$km['galones']:-(float)$km['galones'];
-                        qrows('UPDATE kardex_combustible SET saldo_gll=? WHERE id_kardex=?',[round($ksal,2),$km['id_kardex']]);
+                    $id_kardex_del = $kex['id_kardex'];
+                    $saldo_prev_del = qone('SELECT saldo_gll FROM kardex_combustible WHERE id_kardex < ? ORDER BY id_kardex DESC LIMIT 1',[$id_kardex_del]);
+                    qrows('DELETE FROM kardex_combustible WHERE id_kardex=?',[$id_kardex_del]);
+                    // Recalcular saldos solo desde el siguiente registro en adelante
+                    $ksal_del=(float)($saldo_prev_del['saldo_gll']??0);
+                    $kmovs_del=qall('SELECT id_kardex,tipo_movimiento,galones FROM kardex_combustible WHERE id_kardex > ? ORDER BY id_kardex ASC',[$id_kardex_del]);
+                    foreach($kmovs_del as $km){
+                        $ksal_del+=$km['tipo_movimiento']==='ENTRADA'?(float)$km['galones']:-(float)$km['galones'];
+                        qrows('UPDATE kardex_combustible SET saldo_gll=? WHERE id_kardex=?',[round($ksal_del,2),$km['id_kardex']]);
                     }
                 }
             }
@@ -734,58 +739,82 @@ if($r0==='ge'){
         ]);
     }
 
-    // POST /api/ge/reconstruir-kardex
-    // Reconstruir kardex_combustible desde compras y consumos GE existentes
+        // POST /api/ge/reconstruir-kardex
+    // Reconstruir kardex desde mayo en adelante, partiendo del saldo del kardex importado
     if($r1==='reconstruir-kardex'&&$m==='POST'){
-        // 1. Limpiar kardex existente de los GE
-        $ge_ids=qall("SELECT id_unidad FROM unidad WHERE tipo_unidad='GRUPO ELECTROGENO'");
-        $ids=array_column($ge_ids,'id_unidad');
-        if($ids){
-            $ph=implode(',',array_fill(0,count($ids),'?'));
-            qrows("DELETE FROM kardex_combustible WHERE id_unidad IN ($ph)",$ids);
-        }
-        // 2. Insertar ENTRADAS desde compras de combustible para GE (ordenadas por fecha)
+        // 1. Eliminar solo los registros que estén DESPUÉS del último id importado (398)
+        //    Los registros 193-398 fueron importados manualmente y son correctos — no tocarlos
+        $ultimo_importado = 398;
+        qrows('DELETE FROM kardex_combustible WHERE id_kardex > ?', [$ultimo_importado]);
+
+        // 2. Tomar el saldo del último registro importado como punto de partida
+        $base = qone('SELECT saldo_gll FROM kardex_combustible WHERE id_kardex = ?', [$ultimo_importado]);
+        // Si no existe el 398, usar el último disponible
+        if(!$base) $base = qone('SELECT saldo_gll FROM kardex_combustible ORDER BY id_kardex DESC LIMIT 1');
+        // Inyectar ese saldo en la función reg_kardex_ge temporalmente no es posible,
+        // así que recalculamos todos los saldos al final
+
+        // 3. Insertar ENTRADAS desde compras GE desde mayo en adelante
+        //    Incluye notas de crédito (galones negativos = reducción del bidón)
         $compras=qall(
-            "SELECT cc.id_combustible,cc.fecha,cc.id_unidad,cc.cantidad_gll,
-                    cc.tipo_comprobante,cc.nro_comprobante,u.placa
+            "SELECT cc.id_combustible, cc.fecha, cc.id_unidad, cc.cantidad_gll,
+                    cc.tipo_comprobante, cc.nro_comprobante, u.placa
              FROM compra_combustible cc
-             JOIN unidad u ON cc.id_unidad=u.id_unidad AND u.tipo_unidad='GRUPO ELECTROGENO'
-             WHERE u.placa != 'MEBA'
+             JOIN unidad u ON cc.id_unidad=u.id_unidad
+             WHERE u.tipo_unidad = 'GRUPO ELECTROGENO'
+               AND u.placa      != 'MEBA'
                AND cc.tipo_combustible != 'GASOLINA'
-             ORDER BY cc.fecha ASC,cc.id_combustible ASC"
+               AND cc.fecha     >= '2025-05-01'
+             ORDER BY cc.fecha ASC, cc.id_combustible ASC"
         );
+
+        $n_entradas = 0;
         foreach($compras as $cp){
-            if(($cp['placa']??'')==='MEBA') continue; // excluir MEBA
-            reg_kardex_ge((int)$cp['id_unidad'],'ENTRADA',(float)$cp['cantidad_gll'],
-                (int)$cp['id_combustible'],
-                'Compra '.($cp['tipo_comprobante']??'').' '.($cp['nro_comprobante']??'').' · '.$cp['placa'],
-                ($cp['fecha']??date('Y-m-d')).' 00:00:00');
+            $gll   = (float)$cp['cantidad_gll'];
+            $tipo  = $gll >= 0 ? 'ENTRADA' : 'SALIDA'; // nota de crédito = negativo = SALIDA
+            $gll_a = abs($gll);
+            $obs   = 'Compra '.($cp['tipo_comprobante']??'').' '.($cp['nro_comprobante']??'').' · '.$cp['placa'];
+            qexec(
+                'INSERT INTO kardex_combustible(fecha,id_unidad,tipo_movimiento,galones,id_combustible,observacion,saldo_gll)VALUES(?,?,?,?,?,?,0)',
+                [($cp['fecha']??date('Y-m-d')).' 00:00:00', $cp['id_unidad'], $tipo, $gll_a, $cp['id_combustible'], $obs]
+            );
+            $n_entradas++;
         }
-        // 3. Insertar SALIDAS desde consumo_grupo_electrogeno (ordenadas por fecha/hora)
+
+        // 4. Insertar SALIDAS desde consumo_grupo_electrogeno desde mayo
         $consumos=qall(
-            "SELECT cge.*,u.placa FROM consumo_grupo_electrogeno cge
+            "SELECT cge.*, u.placa FROM consumo_grupo_electrogeno cge
              JOIN unidad u ON cge.id_unidad=u.id_unidad
-             WHERE (cge.galones_echados > 0 OR cge.galones_consumidos > 0)
-             ORDER BY cge.fecha ASC,cge.hora ASC"
+             WHERE u.placa != 'MEBA'
+               AND cge.fecha >= '2025-05-01'
+               AND (cge.galones_echados > 0 OR cge.galones_consumidos > 0)
+             ORDER BY cge.fecha ASC, cge.hora ASC"
         );
+        $n_salidas = 0;
         foreach($consumos as $cg){
-            if(($cg['placa']??'')==='MEBA') continue; // excluir MEBA
-            $gll=((float)($cg['galones_echados']??0))>0
-                ?(float)$cg['galones_echados']
-                :(float)($cg['galones_consumidos']??0);
-            if($gll>0){
-                $fecha_cg = ($cg['fecha']??date('Y-m-d')).' '.($cg['hora']??'00:00:00');
-                reg_kardex_ge((int)$cg['id_unidad'],'SALIDA',$gll,
-                    $cg['id_combustible']??null,
-                    'Consumo '.$cg['placa'].' turno '.$cg['fecha'].($cg['horas_trabajadas']?' · '.$cg['horas_trabajadas'].'h':''),
-                    $fecha_cg);
-            }
+            $gll = (float)($cg['galones_echados']??0) > 0
+                ? (float)$cg['galones_echados']
+                : (float)($cg['galones_consumidos']??0);
+            if($gll <= 0) continue;
+            $obs = 'Consumo '.$cg['placa'].' turno '.$cg['fecha'].($cg['horas_trabajadas']?' · '.$cg['horas_trabajadas'].'h':'');
+            qexec(
+                'INSERT INTO kardex_combustible(fecha,id_unidad,tipo_movimiento,galones,id_combustible,observacion,saldo_gll)VALUES(?,?,?,?,?,?,0)',
+                [($cg['fecha']??date('Y-m-d')).' '.($cg['hora']??'00:00:00'), $cg['id_unidad'], 'SALIDA', $gll, $cg['id_combustible']??null, $obs]
+            );
+            $n_salidas++;
         }
-        $saldo_final=(float)(qval('SELECT saldo_gll FROM kardex_combustible ORDER BY fecha DESC,id_kardex DESC LIMIT 1')??0);
-        $n_entradas=count($compras);
-        $n_salidas=count(array_filter($consumos,function($cg2){ return ((float)($cg2['galones_echados']??0)+(float)($cg2['galones_consumidos']??0))>0; }));
-        jout(['ok'=>true,'entradas'=>$n_entradas,'salidas'=>$n_salidas,'saldo_final'=>$saldo_final]);
-    }
+
+        // 5. Recalcular todos los saldos en cadena desde el inicio del kardex
+        $movs = qall('SELECT id_kardex,tipo_movimiento,galones FROM kardex_combustible ORDER BY fecha ASC,id_kardex ASC');
+        $sal  = 0;
+        foreach($movs as $mv){
+            $sal += $mv['tipo_movimiento']==='ENTRADA' ? (float)$mv['galones'] : -(float)$mv['galones'];
+            qrows('UPDATE kardex_combustible SET saldo_gll=? WHERE id_kardex=?', [round($sal,2), $mv['id_kardex']]);
+        }
+
+        $saldo_final = (float)(qval('SELECT saldo_gll FROM kardex_combustible ORDER BY fecha DESC,id_kardex DESC LIMIT 1')??0);
+        jout(['ok'=>true,'entradas'=>$n_entradas,'salidas'=>$n_salidas,'saldo_final'=>$saldo_final,'total_movs'=>count($movs)]);
+    }    }
 
     if($r1==='saldo-bidon'){
         // El bidón es un reservorio compartido entre todos los GE
