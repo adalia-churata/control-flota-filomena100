@@ -281,12 +281,15 @@ if($r0==='compras'){
         if(($d['forma_pago']??'')==='CREDITO')registrar_movimiento_credito((int)$id,$total,($d['tipo_comprobante']??'').' '.($d['nro_comprobante']??''));
         $asig=run_assignment((int)$id);
         // Si la compra es para un GE (Perkins o Cattini) → ENTRADA en kardex del bidón
+        // Excluir MEBA y GASOLINA del kardex del bidón
         $kardex_ge = false;
-        if(!empty($d['id_unidad'])){
+        if(!empty($d['id_unidad']) && ($d['tipo_combustible']??'')!=='GASOLINA'){
             $uid_tipo=qone('SELECT tipo_unidad,placa FROM unidad WHERE id_unidad=?',[$d['id_unidad']]);
-            if(($uid_tipo['tipo_unidad']??'') === 'GRUPO ELECTROGENO'){
+            if(($uid_tipo['tipo_unidad']??'')==='GRUPO ELECTROGENO' && ($uid_tipo['placa']??'')!=='MEBA'){
+                $fecha_compra = ($d['fecha']??date('Y-m-d')).' 00:00:00';
                 reg_kardex_ge((int)$d['id_unidad'],'ENTRADA',$cant,(int)$id,
-                    'Compra '.($d['tipo_comprobante']??'').' '.($d['nro_comprobante']??'').' · '.($uid_tipo['placa']??''));
+                    'Compra '.($d['tipo_comprobante']??'').' '.($d['nro_comprobante']??'').' · '.($uid_tipo['placa']??''),
+                    $fecha_compra);
                 $kardex_ge = true;
             }
         }
@@ -335,10 +338,10 @@ if($r0==='compras'){
             $saldo_msg='Movimiento de credito registrado';
         }
 
-        // Si la compra es para un GE → actualizar/crear ENTRADA en kardex
-        if(!empty($d['id_unidad'])){
+        // Si la compra es para un GE (no MEBA, no GASOLINA) → actualizar/crear ENTRADA en kardex
+        if(!empty($d['id_unidad']) && ($d['tipo_combustible']??'')!=='GASOLINA'){
             $uid_tipo2=qone('SELECT tipo_unidad,placa FROM unidad WHERE id_unidad=?',[$d['id_unidad']]);
-            if(($uid_tipo2['tipo_unidad']??'') === 'GRUPO ELECTROGENO'){
+            if(($uid_tipo2['tipo_unidad']??'')==='GRUPO ELECTROGENO' && ($uid_tipo2['placa']??'')!=='MEBA'){
                 // Buscar si ya hay un kardex ENTRADA para esta compra
                 $kex=qone("SELECT id_kardex,galones FROM kardex_combustible WHERE id_combustible=? AND tipo_movimiento='ENTRADA' LIMIT 1",[$id]);
                 if($kex){
@@ -356,8 +359,10 @@ if($r0==='compras'){
                     }
                 } else {
                     // No existía → crear ENTRADA
+                    $fecha_compra2 = ($d['fecha']??date('Y-m-d')).' 00:00:00';
                     reg_kardex_ge((int)$d['id_unidad'],'ENTRADA',$cant,$id,
-                        'Compra '.($d['tipo_comprobante']??'').' '.($d['nro_comprobante']??'').' · '.($uid_tipo2['placa']??''));
+                        'Compra '.($d['tipo_comprobante']??'').' '.($d['nro_comprobante']??'').' · '.($uid_tipo2['placa']??''),
+                        $fecha_compra2);
                 }
             }
         }
@@ -624,11 +629,13 @@ if($r0==='ge'){
         );
 
         // Registrar SALIDA en kardex del bidón compartido
-        // Lo que sale del bidón = galones_echados (si se registró) o galones_consumidos
+        // Excluir MEBA del kardex del bidón
+        $u_placa = $u['placa'] ?? '';
         $gllKardex = $gllEch > 0 ? $gllEch : ($gllCons ?? 0);
-        if ($gllKardex > 0) {
+        if ($gllKardex > 0 && $u_placa !== 'MEBA') {
             reg_kardex_ge($idU, 'SALIDA', $gllKardex, $id_comb,
-                'Consumo ' . $u['placa'] . ' turno ' . $fecha . ($horas ? ' · '.$horas.'h' : ''));
+                'Consumo ' . $u_placa . ' turno ' . $fecha . ($horas ? ' · '.$horas.'h' : ''),
+                $fecha . ' ' . $hora);
         }
 
         jout([
@@ -649,6 +656,27 @@ if($r0==='ge'){
         reg_kardex_ge((int)$d['id_unidad'],'ENTRADA',(float)$d['galones'],$d['id_combustible']??null,$d['observacion']??'Entrada bidón');
         jout(['ok'=>true]);
     }
+    // POST /api/ge/limpiar-desde-id — elimina todo anterior al id_kardex dado y recalcula
+    if($r1==='limpiar-desde-id'&&$m==='POST'){
+        $d      = jbody();
+        $id_ini = (int)($d['id_kardex'] ?? 0);
+        if($id_ini <= 0) jout(['ok'=>false,'msg'=>'id_kardex requerido'], 400);
+
+        $n_del = (int)(qval('SELECT COUNT(*) FROM kardex_combustible WHERE id_kardex < ?', [$id_ini]) ?? 0);
+        qrows('DELETE FROM kardex_combustible WHERE id_kardex < ?', [$id_ini]);
+
+        // Recalcular saldos desde cero
+        $movs = qall('SELECT id_kardex,tipo_movimiento,galones FROM kardex_combustible ORDER BY fecha ASC,id_kardex ASC');
+        $sal  = 0;
+        foreach($movs as $mv){
+            $sal += $mv['tipo_movimiento']==='ENTRADA' ? (float)$mv['galones'] : -(float)$mv['galones'];
+            qrows('UPDATE kardex_combustible SET saldo_gll=? WHERE id_kardex=?', [round($sal,2), $mv['id_kardex']]);
+        }
+
+        $saldo_final = (float)(qval('SELECT saldo_gll FROM kardex_combustible ORDER BY fecha DESC,id_kardex DESC LIMIT 1') ?? 0);
+        jout(['ok'=>true,'eliminados'=>$n_del,'movimientos'=>count($movs),'saldo_final'=>$saldo_final]);
+    }
+
     // POST /api/ge/limpiar-kardex-pre-mayo
     // Elimina todos los movimientos del kardex anteriores a la primera ENTRADA de mayo
     // y recalcula los saldos en cadena desde ese punto
@@ -722,12 +750,16 @@ if($r0==='ge'){
                     cc.tipo_comprobante,cc.nro_comprobante,u.placa
              FROM compra_combustible cc
              JOIN unidad u ON cc.id_unidad=u.id_unidad AND u.tipo_unidad='GRUPO ELECTROGENO'
+             WHERE u.placa != 'MEBA'
+               AND cc.tipo_combustible != 'GASOLINA'
              ORDER BY cc.fecha ASC,cc.id_combustible ASC"
         );
         foreach($compras as $cp){
+            if(($cp['placa']??'')==='MEBA') continue; // excluir MEBA
             reg_kardex_ge((int)$cp['id_unidad'],'ENTRADA',(float)$cp['cantidad_gll'],
                 (int)$cp['id_combustible'],
-                'Compra '.($cp['tipo_comprobante']??'').' '.($cp['nro_comprobante']??'').' · '.$cp['placa']);
+                'Compra '.($cp['tipo_comprobante']??'').' '.($cp['nro_comprobante']??'').' · '.$cp['placa'],
+                ($cp['fecha']??date('Y-m-d')).' 00:00:00');
         }
         // 3. Insertar SALIDAS desde consumo_grupo_electrogeno (ordenadas por fecha/hora)
         $consumos=qall(
@@ -737,13 +769,16 @@ if($r0==='ge'){
              ORDER BY cge.fecha ASC,cge.hora ASC"
         );
         foreach($consumos as $cg){
+            if(($cg['placa']??'')==='MEBA') continue; // excluir MEBA
             $gll=((float)($cg['galones_echados']??0))>0
                 ?(float)$cg['galones_echados']
                 :(float)($cg['galones_consumidos']??0);
             if($gll>0){
+                $fecha_cg = ($cg['fecha']??date('Y-m-d')).' '.($cg['hora']??'00:00:00');
                 reg_kardex_ge((int)$cg['id_unidad'],'SALIDA',$gll,
                     $cg['id_combustible']??null,
-                    'Consumo '.$cg['placa'].' turno '.$cg['fecha'].($cg['horas_trabajadas']?' · '.$cg['horas_trabajadas'].'h':''));
+                    'Consumo '.$cg['placa'].' turno '.$cg['fecha'].($cg['horas_trabajadas']?' · '.$cg['horas_trabajadas'].'h':''),
+                    $fecha_cg);
             }
         }
         $saldo_final=(float)(qval('SELECT saldo_gll FROM kardex_combustible ORDER BY fecha DESC,id_kardex DESC LIMIT 1')??0);
@@ -1292,13 +1327,14 @@ if($r0==='procesos'){
 jout(['error'=>'Endpoint no encontrado','path'=>implode('/',$s)],404);
 }
 
-function reg_kardex_ge(int $id_u,string $tipo,float $gll,?int $id_comb,string $obs):void{
+function reg_kardex_ge(int $id_u,string $tipo,float $gll,?int $id_comb,string $obs,string $fecha=''):void{
     // El bidon es compartido: el saldo es el ultimo saldo global de todos los GE
     $ul=qone('SELECT saldo_gll FROM kardex_combustible ORDER BY fecha DESC,id_kardex DESC LIMIT 1');
     $saldo=(float)($ul['saldo_gll']??0);
     $nuevo=$tipo==='ENTRADA'?$saldo+$gll:$saldo-$gll;
-    qexec('INSERT INTO kardex_combustible(fecha,id_unidad,tipo_movimiento,galones,id_combustible,observacion,saldo_gll)VALUES(NOW(),?,?,?,?,?,?)',
-        [$id_u,$tipo,$gll,$id_comb,$obs,round($nuevo,2)]);
+    $f = $fecha!=='' ? $fecha : date('Y-m-d H:i:s');
+    qexec('INSERT INTO kardex_combustible(fecha,id_unidad,tipo_movimiento,galones,id_combustible,observacion,saldo_gll)VALUES(?,?,?,?,?,?,?)',
+        [$f,$id_u,$tipo,$gll,$id_comb,$obs,round($nuevo,2)]);
 }
 
 function run_assignment_maq(int $id_u,float $h_ini,float $h_fin,int $id_dia):array{
