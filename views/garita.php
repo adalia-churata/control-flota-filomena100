@@ -172,7 +172,7 @@ $horaAhora = date('H:i');
           <select id="mv-act">
             <option value="">Seleccionar…</option>
             <option>ACOPIO</option><option>LOGISTICA</option><option>AGUA</option>
-            <option>MANTENIMIENTO</option><option>VENTA DE MINERAL</option><option>PAD</option>
+            <option>MANTENIMIENTO</option><option>VENTA DE MINERAL</option><option>PAD</option><option>RELAVERA</option>
           </select>
         </div>
         <div class="fgroup">
