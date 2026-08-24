@@ -151,7 +151,7 @@
         </div>
       </div>
 
-      <!-- Resultado calculado -->
+      <!-- Resultado calculated -->
       <div id="md-horas-wrap" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px 16px">
         <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-end">
           <div>
@@ -210,7 +210,6 @@
             <div><span class="text-muted">Tipo consumo:</span> <strong id="act-tipo-cons">—</strong></div>
             <div><span class="text-muted">Factor carga:</span> <strong id="act-factor">—</strong></div>
             <div><span class="text-muted">Total horas:</span>  <strong id="act-total-h">—</strong></div>
-            <div><span class="text-muted">Carga equiv.:</span> <strong id="act-carga-eq">—</strong></div>
           </div>
         </div>
         <div style="display:flex;justify-content:flex-end;margin-top:10px">
@@ -304,7 +303,7 @@ let acOpTimer = null;
 function filtrarACOp() {
   clearTimeout(acOpTimer);
   acOpTimer = setTimeout(() => {
-    const q   = (document.getElementById('md-conductor-input').value || '').toLowerCase();
+    const q    = (document.getElementById('md-conductor-input').value || '').toLowerCase();
     const drop = document.getElementById('ac-operador');
     const items = q.length === 0
       ? maqConductoresCache
@@ -318,7 +317,7 @@ function filtrarACOp() {
         : ct.nombre_conductor;
       const sub = ct.nro_licencia ? `Lic: ${ct.nro_licencia}` : '';
       return `<div class="ac-item" data-id="${ct.id_conductor}"
-                   onmousedown="elegirOperador(${ct.id_conductor},'${ct.nombre_conductor.replace(/'/g,"\'")}')">
+                   onmousedown="elegirOperador(${ct.id_conductor},'${ct.nombre_conductor.replace(/'/g,"\\'")}')">
                ${hl}
                ${sub ? `<div class="ac-sub">${sub}</div>` : ''}
              </div>`;
@@ -338,8 +337,8 @@ function cerrarACOp() {
 }
 
 function calcActTotalH() {
-  var hi = document.getElementById('act-hinicio').value;
-  var hf = document.getElementById('act-hfin').value;
+  var hi = document.getElementById('act-hi').value;
+  var hf = document.getElementById('act-hf').value;
   if (hi && hf) {
     var diff = (new Date('2000-01-01 '+hf) - new Date('2000-01-01 '+hi)) / 3600000;
     document.getElementById('act-total-h').textContent = diff > 0 ? fmt.num(diff,2) + ' h' : '—';
@@ -407,8 +406,8 @@ function onActividadChange() {
   const opt  = sel.options[sel.selectedIndex];
   const wrap = document.getElementById('act-info-wrap');
   if (!sel.value) { wrap.style.display = 'none'; return; }
-  document.getElementById('act-factor').textContent   = opt.dataset.factor || '—';
-  document.getElementById('act-tipo-cons').textContent= opt.dataset.tipo   || '—';
+  document.getElementById('act-factor').textContent    = opt.dataset.factor || '—';
+  document.getElementById('act-tipo-cons').textContent = opt.dataset.tipo   || '—';
   wrap.style.display = 'block';
   calcularHorasAct();
 }
@@ -417,13 +416,8 @@ function calcularHorasAct() {
   const hi  = document.getElementById('act-hi').value;
   const hf  = document.getElementById('act-hf').value;
   if (!hi || !hf) return;
-  const sel = document.getElementById('act-tipo');
-  const opt = sel.options[sel.selectedIndex];
-  const totalH   = (new Date('1970-01-01T'+hf) - new Date('1970-01-01T'+hi)) / 3600000;
-  const factor   = parseFloat(opt?.dataset?.factor || 1);
-  const cargaEq  = (totalH * factor).toFixed(2);
-  tx('act-total-h',  fmt.num(totalH, 2) + ' h');
-  tx('act-carga-eq', cargaEq + ' h');
+  const totalH = (new Date('1970-01-01T'+hf) - new Date('1970-01-01T'+hi)) / 3600000;
+  tx('act-total-h', fmt.num(totalH, 2) + ' h');
 }
 
 // ── Cargar días ──────────────────────────────────────────────
@@ -728,7 +722,6 @@ async function cargarActividadesEnModal(idDia) {
     return;
   }
 
-  const totalCarga = data.reduce((s,a) => s + parseFloat(a.carga_equivalente||0), 0);
   lista.innerHTML = data.map(a => {
     const tipoCls = a.tipo_consumo === 'CONSUMO ALTO' ? 'badge-danger'
                   : a.tipo_consumo === 'CONSUMO MEDIO' ? 'badge-warn' : 'badge-ok';
@@ -739,7 +732,6 @@ async function cargarActividadesEnModal(idDia) {
         <div style="font-size:11px;color:var(--text3)">
           ${a.hora_inicio||'—'} – ${a.hora_fin||'—'}
           · ${fmt.num(a.total_hora||0,2)} h
-          · Carga equiv: ${fmt.num(a.carga_equivalente||0,2)} h
           ${a.observacion ? `· ${a.observacion}` : ''}
         </div>
       </div>
@@ -749,10 +741,7 @@ async function cargarActividadesEnModal(idDia) {
                 onclick="eliminarActividad(${a.id_control_activ})">🗑</button>
       </div>
     </div>`;
-  }).join('') + `
-  <div style="background:var(--brand-lt);border-radius:6px;padding:7px 12px;font-size:12px">
-    <strong>Total carga equiv.:</strong> ${fmt.num(totalCarga,2)} h · ${data.length} actividad${data.length!==1?'es':''}
-  </div>`;
+  }).join('');
 }
 
 async function agregarActividadModal() {
@@ -764,269 +753,23 @@ async function agregarActividadModal() {
     id_actividad:   document.getElementById('act-tipo').value,
     observacion:    document.getElementById('act-obs').value  || null,
     hora_inicio:    document.getElementById('act-hi').value   || null,
-    hora_fin:       document.getElementById('act-hf').value   || null,
+    hora_fin:       document.getElementById('act-hf').value   || null
   };
-  if (!payload.id_actividad || !payload.hora_inicio || !payload.hora_fin) {
-    toast('Selecciona actividad y horario', 'error'); return;
+  if (!payload.id_actividad) {
+    toast('Selecciona el tipo de actividad', 'error'); return;
   }
+
   try {
-    const r = await api('/api/maquinaria/actividades', { method:'POST', body:JSON.stringify(payload) });
-    toast(`Actividad agregada · ${fmt.num(r.total_hora||0,2)} h`, 'ok');
-    // Limpiar form actividad
+    await api('/api/maquinaria/actividades', { method: 'POST', body: JSON.stringify(payload) });
+    toast('Actividad agregada', 'ok');
     document.getElementById('act-tipo').value = '';
     document.getElementById('act-obs').value  = '';
     document.getElementById('act-hi').value   = '';
     document.getElementById('act-hf').value   = '';
     document.getElementById('act-info-wrap').style.display = 'none';
-    await cargarActividadesEnModal(idDiaGuardado);
-  } catch(e) {
+    cargarActividadesEnModal(idDiaGuardado);
+  } catch (e) {
     toast('Error: ' + e.message, 'error');
   }
 }
-
-async function eliminarActividad(idActiv) {
-  try {
-    await api(`/api/maquinaria/actividades/${idActiv}`, { method:'DELETE' });
-    toast('Actividad eliminada', 'ok');
-    await cargarActividadesEnModal(idDiaGuardado);
-  } catch(e) {
-    toast('Error: ' + e.message, 'error');
-  }
-}
-
-// Ver actividades desde tabla principal (botón "Ver/Agregar")
-// Abrir modal para agregar actividad a un día YA existente
-// El usuario selecciona de cuál día quiere agregar actividad
-async function abrirModalSoloActividad() {
-  // Cargar lista de días recientes para seleccionar
-  const desde = new Date(Date.now()-30*86400000).toISOString().slice(0,10);
-  const dias   = await api('/api/maquinaria/dias?fecha_desde=' + desde);
-
-  if (!dias.length) {
-    toast('No hay días registrados en los últimos 30 días. Registra primero el día.','warn');
-    return;
-  }
-
-  // Construir selector simple
-  let opts = dias.map(d =>
-    '<option value="' + d.id_control_dia + '">' +
-    fmtFecha(d.fecha) + ' — ' + d.placa +
-    (d.horometro_final ? ' — Horóm.Fin: ' + fmt.num(d.horometro_final,1) : '') +
-    '</option>'
-  ).join('');
-
-  document.getElementById('act-dia-sel').innerHTML =
-    '<option value="">Seleccionar día...</option>' + opts;
-  document.getElementById('act-dia-sel').value = '';
-
-  // Limpiar campos de actividad
-  document.getElementById('act-id-act').value    = '';
-  document.getElementById('act-obs').value       = '';
-  document.getElementById('act-hinicio').value   = '';
-  document.getElementById('act-hfin').value      = '';
-  document.getElementById('act-total-h').textContent = '—';
-
-  abrirModal('modal-solo-actividad');
-}
-
-async function guardarSoloActividad() {
-  const id_dia  = document.getElementById('act-dia-sel').value;
-  const id_act  = document.getElementById('act-id-act').value;
-  const obs     = document.getElementById('act-obs').value   || null;
-  const hi      = document.getElementById('act-hinicio').value || null;
-  const hf      = document.getElementById('act-hfin').value   || null;
-
-  if (!id_dia)  { toast('Selecciona un día','error'); return; }
-  if (!id_act)  { toast('Selecciona la actividad','error'); return; }
-  if (!hi || !hf){ toast('Ingresa hora inicio y fin','error'); return; }
-
-  try {
-    const r = await api('/api/maquinaria/actividades', {
-      method: 'POST',
-      body: JSON.stringify({
-        id_control_dia: parseInt(id_dia),
-        id_actividad:   parseInt(id_act),
-        observacion:    obs,
-        hora_inicio:    hi,
-        hora_fin:       hf,
-      }),
-    });
-    toast('Actividad registrada — ' + (r.total_hora||0) + ' h', 'ok');
-    cerrarModal('modal-solo-actividad');
-    cargarMaquinaria(); // refrescar tabla
-  } catch(e) { toast('Error: ' + e.message, 'error'); }
-}
-
-async function abrirModalActividades(idDia) {
-  // Buscar el día en diasData para rellenar el form
-  const d = diasData.find(x => x.id_control_dia === idDia);
-  if (d) {
-    limpiarFormDia();
-    rellenarFormDia(d);
-    idDiaGuardado = idDia;
-    document.getElementById('modal-dia-title').textContent = `Actividades — ${d.placa} (${fmtFecha(d.fecha)})`;
-    await cargarActividadesEnModal(idDia);
-    abrirModal('modal-dia');
-  }
-}
-
-// ── Eliminar día ──────────────────────────────────────────────
-function confirmarEliminarDia(id) {
-  document.getElementById('btn-del-mq').onclick = async () => {
-    try {
-      await api(`/api/maquinaria/dias/${id}`, { method:'DELETE' });
-      toast('Registro eliminado', 'ok');
-      cerrarModal('modal-confirmar-mq');
-      cargarDias();
-    } catch(e) { toast('Error: '+e.message,'error'); }
-  };
-  abrirModal('modal-confirmar-mq');
-}
-
-// ── Exportar Excel ────────────────────────────────────────────
-async function exportarMaquinaria() {
-  if (!diasData.length) { toast('Sin datos','warn'); return; }
-  const ws = XLSX.utils.json_to_sheet(diasData.map(d=>({
-    'Fecha': d.fecha, 'Máquina': d.placa,
-    'Operador': d.conductor_nombre||'—',
-    'Horóm. Ini.': d.horometro_inicio??'',
-    'Horóm. Fin.': d.horometro_final??'',
-    'Horas':       d.horas_horometro??'',
-    'H. Ralentí':  d.horas_ralenti??0,
-    'Combustible': d.id_combustible?'Asignado':'Pendiente',
-  })));
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Control Diario');
-  const fd = document.getElementById('mq-desde').value;
-  const fh = document.getElementById('mq-hasta').value;
-  XLSX.writeFile(wb, `Maquinaria_${fd}_${fh}.xlsx`);
-  toast('Excel generado','ok');
-}
-
-// ── Helper: semana ISO ────────────────────────────────────────
-function getISOWeek(dateStr) {
-  const d = new Date(dateStr + 'T12:00:00');
-  const startOfYear = new Date(d.getFullYear(), 0, 1);
-  const week = Math.ceil(((d - startOfYear) / 86400000 + startOfYear.getDay() + 1) / 7);
-  return String(week).padStart(2,'0');
-}
-
-// ── Asignación manual ─────────────────────────────────────────
-async function cargarPendientesAsign() {
-  const data = await api('/api/maquinaria/dias?solo_sin_asignar=1');
-  const sel  = document.getElementById('asign-dia');
-  sel.innerHTML = '<option value="">Seleccionar día…</option>';
-  data.forEach(d => {
-    sel.insertAdjacentHTML('beforeend',
-      `<option value="${d.id_control_dia}">${fmtFecha(d.fecha)} — ${d.placa} — Horóm.Fin: ${d.horometro_final||'—'}</option>`);
-  });
-  renderAsignTabla(data);
-
-  // Cargar compras de maquinaria
-  const compras = await api('/api/compras?tipo_combustible=PETROLEO');
-  const selC = document.getElementById('asign-compra');
-  selC.innerHTML = '<option value="">Seleccionar compra…</option>';
-  compras.filter(c => c.id_unidad).forEach(cc => {
-    selC.insertAdjacentHTML('beforeend',
-      `<option value="${cc.id_combustible}">${fmtFecha(cc.fecha)} — ${cc.placa||'—'} — km/Horóm:${cc.km_vehiculo||'—'} — ${fmt.num(cc.cantidad_gll,1)} gll</option>`);
-  });
-}
-
-function renderAsignTabla(data) {
-  const tbody = document.getElementById('asign-tbody');
-  if (!data.length) { tbody.innerHTML='<tr><td colspan="8" class="empty">Sin registros pendientes de asignación.</td></tr>'; return; }
-  tbody.innerHTML = data.map(d => `<tr>
-    <td>${fmtFecha(d.fecha)}</td>
-    <td><strong>${d.placa||'—'}</strong></td>
-    <td class="text-sm">${d.conductor_nombre||'—'}</td>
-    <td class="mono">${d.horometro_inicio!=null?fmt.num(d.horometro_inicio,1):'—'}</td>
-    <td class="mono">${d.horometro_final!=null?fmt.num(d.horometro_final,1):'—'}</td>
-    <td>${d.horas_horometro?fmt.num(d.horas_horometro,2)+' h':'—'}</td>
-    <td><span class="badge badge-warn">Sin asignar</span></td>
-    <td>
-      <button class="btn btn-outline btn-xs" onclick="seleccionarDia(${d.id_control_dia})">
-        Seleccionar
-      </button>
-    </td>
-  </tr>`).join('');
-}
-
-function seleccionarDia(id) {
-  document.getElementById('asign-dia').value = id;
-  cargarDetalleAsign();
-  document.getElementById('asign-dia').scrollIntoView({behavior:'smooth'});
-}
-
-function cargarDetalleAsign() {
-  const id = document.getElementById('asign-dia').value;
-  const el = document.getElementById('asign-detalle');
-  if (!id) { el.textContent=''; return; }
-  const d = diasData.find(x => x.id_control_dia == id);
-  if (!d) return;
-  el.innerHTML = `<strong>Seleccionado:</strong> ${d.placa} — ${fmtFecha(d.fecha)} — Horóm. ${fmt.num(d.horometro_inicio||0,1)} → ${fmt.num(d.horometro_final||0,1)} (${fmt.num(d.horas_horometro||0,2)} h)`;
-}
-
-async function ejecutarAsignManual() {
-  const id_dia    = document.getElementById('asign-dia').value;
-  const id_comb   = document.getElementById('asign-compra').value;
-  if (!id_dia || !id_comb) { toast('Selecciona el día y la compra de combustible','error'); return; }
-  try {
-    await api('/api/maquinaria/asignar-combustible',{
-      method:'POST',
-      body: JSON.stringify({ id_control_dia: parseInt(id_dia), id_combustible: parseInt(id_comb) })
-    });
-    toast('Combustible asignado correctamente','ok');
-    cargarDias();
-    cargarPendientesAsign();
-  } catch(e) { toast('Error: '+e.message,'error'); }
-}
-
 </script>
-
-<!-- ═══════════════════════════════════════════════════════════
-     PANEL: Asignación manual de combustible
-════════════════════════════════════════════════════════════ -->
-<div class="card full" style="margin-top:var(--gap)">
-  <div class="card-title">
-    🔗 Asignación manual de combustible — Maquinaria
-    <span class="text-muted text-sm">Para corregir asignaciones pendientes o combinadas</span>
-  </div>
-  <div style="font-size:13px;color:var(--text2);margin-bottom:12px;background:var(--brand-lt);padding:10px 14px;border-radius:8px">
-    ℹ Aquí puedes asignar manualmente una compra de combustible a un día de trabajo.
-    Útil cuando varias facturas se combinaron, o cuando la asignación automática no funcionó.
-  </div>
-
-  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">
-    <div class="fgroup" style="min-width:220px;margin:0">
-      <label>Día de trabajo sin asignar</label>
-      <select id="asign-dia" onchange="cargarDetalleAsign()">
-        <option value="">Seleccionar día…</option>
-      </select>
-    </div>
-    <div class="fgroup" style="min-width:220px;margin:0">
-      <label>Compra de combustible a asignar</label>
-      <select id="asign-compra">
-        <option value="">Seleccionar compra…</option>
-      </select>
-    </div>
-    <button class="btn btn-primary btn-sm" onclick="ejecutarAsignManual()">
-      Asignar
-    </button>
-    <button class="btn btn-outline btn-sm" onclick="cargarPendientesAsign()">
-      🔄 Actualizar lista
-    </button>
-  </div>
-
-  <div id="asign-detalle" style="font-size:12px;color:var(--text2);padding:8px 0"></div>
-
-  <div class="tbl-wrap">
-    <table class="tbl">
-      <thead>
-        <tr><th>Fecha</th><th>Máquina</th><th>Operador</th><th>Horóm. Ini.</th><th>Horóm. Fin.</th><th>Horas</th><th>Combustible</th><th>Acción</th></tr>
-      </thead>
-      <tbody id="asign-tbody">
-        <tr><td colspan="8" class="empty">Clic en "Actualizar lista" para ver registros sin asignar.</td></tr>
-      </tbody>
-    </table>
-  </div>
-</div>
