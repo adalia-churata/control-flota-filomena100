@@ -444,9 +444,9 @@ if($r0==='maquinaria'){
         $th=($hi&&$hf)?round((strtotime($hf)-strtotime($hi))/3600,2):null;
         $act=qone('SELECT factor_carga FROM actividades_retro WHERE id_actividad=?',[$d['id_actividad']]);
         $ceq=$th!==null&&$act?round($th*(float)$act['factor_carga'],2):null;
-        $id=qexec('INSERT INTO retro_control_actividad(id_control_dia,id_actividad,observacion,hora_inicio,hora_fin,total_hora,carga_equivalente)VALUES(?,?,?,?,?,?,?)',
-            [$d['id_control_dia'],$d['id_actividad'],$d['observacion']??null,$hi,$hf,$th,$ceq]);
-        jout(['id_control_activ'=>(int)$id,'total_hora'=>$th,'carga_equivalente'=>$ceq],201);
+        $id=qexec('INSERT INTO retro_control_actividad(id_control_dia,id_actividad,observacion,hora_inicio,hora_fin,total_hora)VALUES(?,?,?,?,?,?)',
+            [$d['id_control_dia'],$d['id_actividad'],$d['observacion']??null,$hi,$hf,$th]);
+        jout(['id_control_activ'=>(int)$id,'total_hora'=>$th],201);
     }
     if($r1==='actividades'&&$r2!==''&&$m==='DELETE'){
         qrows('DELETE FROM retro_control_actividad WHERE id_control_activ=?',[(int)$r2]);

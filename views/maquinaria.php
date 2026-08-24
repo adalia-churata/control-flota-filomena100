@@ -337,6 +337,15 @@ function cerrarACOp() {
   setTimeout(() => document.getElementById('ac-operador').classList.remove('open'), 150);
 }
 
+function calcActTotalH() {
+  var hi = document.getElementById('act-hinicio').value;
+  var hf = document.getElementById('act-hfin').value;
+  if (hi && hf) {
+    var diff = (new Date('2000-01-01 '+hf) - new Date('2000-01-01 '+hi)) / 3600000;
+    document.getElementById('act-total-h').textContent = diff > 0 ? fmt.num(diff,2) + ' h' : '—';
+  }
+}
+
 async function cargarActividadesCatalogo() {
   activCache = await api('/api/actividades-retro');
   const sel  = document.getElementById('act-tipo');
@@ -786,6 +795,68 @@ async function eliminarActividad(idActiv) {
 }
 
 // Ver actividades desde tabla principal (botón "Ver/Agregar")
+// Abrir modal para agregar actividad a un día YA existente
+// El usuario selecciona de cuál día quiere agregar actividad
+async function abrirModalSoloActividad() {
+  // Cargar lista de días recientes para seleccionar
+  const desde = new Date(Date.now()-30*86400000).toISOString().slice(0,10);
+  const dias   = await api('/api/maquinaria/dias?fecha_desde=' + desde);
+
+  if (!dias.length) {
+    toast('No hay días registrados en los últimos 30 días. Registra primero el día.','warn');
+    return;
+  }
+
+  // Construir selector simple
+  let opts = dias.map(d =>
+    '<option value="' + d.id_control_dia + '">' +
+    fmtFecha(d.fecha) + ' — ' + d.placa +
+    (d.horometro_final ? ' — Horóm.Fin: ' + fmt.num(d.horometro_final,1) : '') +
+    '</option>'
+  ).join('');
+
+  document.getElementById('act-dia-sel').innerHTML =
+    '<option value="">Seleccionar día...</option>' + opts;
+  document.getElementById('act-dia-sel').value = '';
+
+  // Limpiar campos de actividad
+  document.getElementById('act-id-act').value    = '';
+  document.getElementById('act-obs').value       = '';
+  document.getElementById('act-hinicio').value   = '';
+  document.getElementById('act-hfin').value      = '';
+  document.getElementById('act-total-h').textContent = '—';
+
+  abrirModal('modal-solo-actividad');
+}
+
+async function guardarSoloActividad() {
+  const id_dia  = document.getElementById('act-dia-sel').value;
+  const id_act  = document.getElementById('act-id-act').value;
+  const obs     = document.getElementById('act-obs').value   || null;
+  const hi      = document.getElementById('act-hinicio').value || null;
+  const hf      = document.getElementById('act-hfin').value   || null;
+
+  if (!id_dia)  { toast('Selecciona un día','error'); return; }
+  if (!id_act)  { toast('Selecciona la actividad','error'); return; }
+  if (!hi || !hf){ toast('Ingresa hora inicio y fin','error'); return; }
+
+  try {
+    const r = await api('/api/maquinaria/actividades', {
+      method: 'POST',
+      body: JSON.stringify({
+        id_control_dia: parseInt(id_dia),
+        id_actividad:   parseInt(id_act),
+        observacion:    obs,
+        hora_inicio:    hi,
+        hora_fin:       hf,
+      }),
+    });
+    toast('Actividad registrada — ' + (r.total_hora||0) + ' h', 'ok');
+    cerrarModal('modal-solo-actividad');
+    cargarMaquinaria(); // refrescar tabla
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
 async function abrirModalActividades(idDia) {
   // Buscar el día en diasData para rellenar el form
   const d = diasData.find(x => x.id_control_dia === idDia);
