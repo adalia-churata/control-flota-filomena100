@@ -54,6 +54,7 @@ function qval(string $sql, array $p = []): mixed {
     $s = pdo()->prepare($sql); $s->execute($p); return $s->fetchColumn();
 }
 function qexec(string $sql, array $p = []): string {
+    error_log("QEXEC SQL: " . $sql);
     $db = pdo(); $s = $db->prepare($sql); $s->execute($p); return $db->lastInsertId();
 }
 function qrows(string $sql, array $p = []): int {
