@@ -374,6 +374,44 @@ if($r0==='compras'){
         jout(['ok'=>true]);
     }
     // Asignación manual viaje flota
+    // POST /api/compras/reasignar-vacios
+    if($r1==='reasignar-vacios'&&$m==='POST'){
+        $d=jbody();
+        $solo_vacios=isset($d['solo_vacios'])?(bool)$d['solo_vacios']:true;
+        $MARGEN=4;
+        $viajes=qall(
+            "SELECT cf.id_control,cf.id_unidad,cf.km_salida,cf.km_retorno
+             FROM control_flota cf
+             JOIN unidad u ON cf.id_unidad=u.id_unidad
+             WHERE cf.km_salida IS NOT NULL AND cf.km_salida>0
+               AND u.tipo_unidad='FLOTA'
+             ORDER BY cf.fecha DESC,cf.id_control DESC LIMIT 500"
+        );
+        $asignados=0;$saltados=0;
+        foreach($viajes as $v){
+            $id_ctrl=(int)$v['id_control'];
+            $id_u=(int)$v['id_unidad'];
+            $km_sal=(float)$v['km_salida'];
+            $km_ret=(float)($v['km_retorno']??0);
+            $tiene=(int)(qval('SELECT COUNT(*) FROM detalle_consumo WHERE id_control=?',[$id_ctrl])??0);
+            if($solo_vacios&&$tiene>0){$saltados++;continue;}
+            $candidatas=qall(
+                "SELECT id_combustible,km_vehiculo FROM compra_combustible WHERE id_unidad=? AND tipo_combustible='PETROLEO' AND km_vehiculo IS NOT NULL AND km_vehiculo>? ORDER BY km_vehiculo ASC",
+                [$id_u,$km_sal]
+            );
+            $mejor=null;
+            foreach($candidatas as $cp){
+                $dif=$km_ret>0?$km_ret-(float)$cp['km_vehiculo']:-1;
+                if($dif<=$MARGEN){$mejor=$cp;break;}
+            }
+            if(!$mejor){$saltados++;continue;}
+            if($tiene>0)qrows('DELETE FROM detalle_consumo WHERE id_control=?',[$id_ctrl]);
+            $ex=(int)(qval('SELECT COUNT(*) FROM detalle_consumo WHERE id_control=? AND id_combustible=?',[$id_ctrl,$mejor['id_combustible']])??0);
+            if(!$ex){qrows('INSERT INTO detalle_consumo(id_control,id_combustible) VALUES(?,?)',[$id_ctrl,$mejor['id_combustible']]);$asignados++;}
+        }
+        jout(['ok'=>true,'asignados'=>$asignados,'saltados'=>$saltados,'total'=>count($viajes)]);
+    }
+
     if($r1==='asignar-viaje'&&$m==='POST'){
         $d=jbody();
         $id_ctrl=(int)($d['id_control']??0);
@@ -443,8 +481,8 @@ if($r0==='maquinaria'){
         $hi=$d['hora_inicio']??null;$hf=$d['hora_fin']??null;
         $th=($hi&&$hf)?round((strtotime($hf)-strtotime($hi))/3600,2):null;
         $act=qone('SELECT factor_carga FROM actividades_retro WHERE id_actividad=?',[$d['id_actividad']]);
-        
-        $id=qexec('INSERT INTO retro_control_actividad(id_control_dia,id_control_activ,observacion,hora_inicio,hora_fin,total_hora)VALUES(?,?,?,?,?,?)',
+        $ceq=$th!==null&&$act?round($th*(float)$act['factor_carga'],2):null;
+        $id=qexec('INSERT INTO retro_control_actividad(id_control_dia,id_actividad,observacion,hora_inicio,hora_fin,total_hora)VALUES(?,?,?,?,?,?)',
             [$d['id_control_dia'],$d['id_actividad'],$d['observacion']??null,$hi,$hf,$th]);
         jout(['id_control_activ'=>(int)$id,'total_hora'=>$th],201);
     }

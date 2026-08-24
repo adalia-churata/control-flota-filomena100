@@ -919,6 +919,29 @@ function mostrarDetalleViaje() {
     (v.observacion?' · '+v.observacion:'');
 }
 
+async function reasignarVacios() {
+  if (!confirm(
+    'Buscará viajes SIN combustible asignado y les asignará la compra correcta\n' +
+    'según la lógica de km (km_tanqueo > km_salida y diferencia ≤ 4 km).\n\n' +
+    'Los viajes que ya tienen asignación NO se tocan.\n\n¿Continuar?'
+  )) return;
+  try {
+    toast('Procesando asignaciones automáticas…', 'warn');
+    var r = await api('/api/compras/reasignar-vacios', {
+      method: 'POST',
+      body: JSON.stringify({ solo_vacios: true })
+    });
+    toast(
+      'Listo: ' + r.asignados + ' viajes asignados · ' +
+      r.saltados + ' sin coincidencia o ya asignados · ' +
+      r.total + ' viajes revisados',
+      'ok'
+    );
+    cargarCompras();
+    cargarViajesPendientes();
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
 async function asignarViajeManual() {
   const id_ctrl = document.getElementById('asign-viaje-sel').value;
   const id_comb = document.getElementById('asign-comb-sel').value;
@@ -975,6 +998,7 @@ async function desasignarViaje() {
       </div>
       <div style="display:flex;flex-direction:column;gap:6px">
         <button class="btn btn-primary" onclick="asignarViajeManual()">✓ Asignar</button>
+        <button class="btn btn-outline btn-sm" style="border-color:var(--brand);color:var(--brand)" onclick="reasignarVacios()" title="Asigna automáticamente compras a viajes sin combustible">🔄 Auto-asignar vacíos</button>
         <button class="btn btn-outline btn-sm" onclick="desasignarViaje()">Quitar</button>
       </div>
     </div>
