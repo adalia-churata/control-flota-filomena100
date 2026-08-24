@@ -444,7 +444,7 @@ if($r0==='maquinaria'){
         $th=($hi&&$hf)?round((strtotime($hf)-strtotime($hi))/3600,2):null;
         $act=qone('SELECT factor_carga FROM actividades_retro WHERE id_actividad=?',[$d['id_actividad']]);
         
-        $id=qexec('INSERT INTO retro_control_actividad(id_control_dia,id_actividad,observacion,hora_inicio,hora_fin,total_hora)VALUES(?,?,?,?,?,?)',
+        $id=qexec('INSERT INTO retro_control_actividad(id_control_dia,id_control_activ,observacion,hora_inicio,hora_fin,total_hora)VALUES(?,?,?,?,?,?)',
             [$d['id_control_dia'],$d['id_actividad'],$d['observacion']??null,$hi,$hf,$th]);
         jout(['id_control_activ'=>(int)$id,'total_hora'=>$th],201);
     }
