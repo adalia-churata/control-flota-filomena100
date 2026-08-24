@@ -728,6 +728,7 @@ async function cargarActividadesEnModal(idDia) {
     return;
   }
 
+  const totalHoras = data.reduce((s,a) => s + parseFloat(a.total_hora||0), 0);
   lista.innerHTML = data.map(a => {
     const tipoCls = a.tipo_consumo === 'CONSUMO ALTO' ? 'badge-danger'
                   : a.tipo_consumo === 'CONSUMO MEDIO' ? 'badge-warn' : 'badge-ok';
@@ -749,7 +750,7 @@ async function cargarActividadesEnModal(idDia) {
     </div>`;
   }).join('') + `
   <div style="background:var(--brand-lt);border-radius:6px;padding:7px 12px;font-size:12px">
-    <strong>Total carga equiv.:</strong> ${fmt.num(totalCarga,2)} h · ${data.length} actividad${data.length!==1?'es':''}
+    <strong>Total horas:</strong> ${fmt.num(totalHoras,2)} h · ${data.length} actividad${data.length!==1?'es':''}
   </div>`;
 }
 
