@@ -279,7 +279,16 @@ if($r0==='compras'){
         $id=qexec('INSERT INTO compra_combustible(fecha,tipo_comprobante,nro_comprobante,id_grifo,id_unidad,tipo_combustible,cantidad_gll,km_vehiculo,precio_unitario,subtotal,igv,total,forma_pago,tanqueo)VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             [$d['fecha']??date('Y-m-d'),$d['tipo_comprobante']??null,$d['nro_comprobante']??null,$d['id_grifo']??null,$d['id_unidad']??null,$d['tipo_combustible'],$cant,$d['km_vehiculo']??null,$pu,$sub,$igv,$total,$d['forma_pago']??'CONTADO',$d['tanqueo']??1]);
         if(($d['forma_pago']??'')==='CREDITO')registrar_movimiento_credito((int)$id,$total,($d['tipo_comprobante']??'').' '.($d['nro_comprobante']??''));
-        $asig=run_assignment((int)$id);
+        // Asignación automática según tipo de unidad
+        $asig=['rows_updated'=>0];
+        if(!empty($d['id_unidad'])){
+            $u_tipo_post=qone('SELECT tipo_unidad FROM unidad WHERE id_unidad=?',[$d['id_unidad']]);
+            if(($u_tipo_post['tipo_unidad']??'')==='FLOTA'){
+                $asig=run_assignment((int)$id);
+            } elseif(($u_tipo_post['tipo_unidad']??'')==='MAQ. PESADA'){
+                $asig=run_assignment_maq_bulk((int)$id);
+            }
+        }
         // Si la compra es para un GE (Perkins o Cattini) → ENTRADA en kardex del bidón
         // Excluir MEBA y GASOLINA del kardex del bidón
         $kardex_ge = false;
@@ -1401,8 +1410,34 @@ function reg_kardex_ge(int $id_u,string $tipo,float $gll,?int $id_comb,string $o
 }
 
 function run_assignment_maq(int $id_u,float $h_ini,float $h_fin,int $id_dia):array{
-    $comb=qone("SELECT id_combustible,km_vehiculo FROM compra_combustible WHERE id_unidad=? AND tipo_combustible='PETROLEO' AND km_vehiculo>=? ORDER BY km_vehiculo ASC LIMIT 1",[$id_u,$h_ini]);
+    $comb=qone(
+        "SELECT id_combustible,km_vehiculo FROM compra_combustible
+         WHERE id_unidad=? AND tipo_combustible='PETROLEO'
+           AND km_vehiculo IS NOT NULL AND km_vehiculo>=?
+         ORDER BY km_vehiculo ASC LIMIT 1",
+        [$id_u,$h_ini]
+    );
     if(!$comb)return['asignado'=>false];
-    qrows('UPDATE retro_control_dia SET id_combustible=? WHERE id_control_dia=? AND id_combustible IS NULL',[$comb['id_combustible'],$id_dia]);
+    qrows('UPDATE retro_control_dia SET id_combustible=? WHERE id_control_dia=? AND id_combustible IS NULL',
+        [$comb['id_combustible'],$id_dia]);
     return['asignado'=>true,'id_combustible'=>$comb['id_combustible']];
+}
+
+function run_assignment_maq_bulk(int $id_combustible):array{
+    $c=qone('SELECT * FROM compra_combustible WHERE id_combustible=?',[$id_combustible]);
+    if(!$c||($c['tipo_combustible']??'')!=='PETROLEO')return['rows_updated'=>0];
+    $km_T=(float)($c['km_vehiculo']??0);
+    if($km_T<=0)return['rows_updated'=>0,'msg'=>'Sin horometro en compra'];
+    $updated=qrows(
+        "UPDATE retro_control_dia
+         SET id_combustible=?
+         WHERE id_unidad=?
+           AND id_combustible IS NULL
+           AND horometro_inicio IS NOT NULL
+           AND horometro_final IS NOT NULL
+           AND horometro_inicio <= ?
+           AND horometro_final >= ?",
+        [$id_combustible,$c['id_unidad'],$km_T,$km_T]
+    );
+    return['rows_updated'=>$updated,'tipo'=>'MAQ. PESADA','horometro_tanqueo'=>$km_T];
 }
