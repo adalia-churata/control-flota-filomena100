@@ -903,20 +903,27 @@ if($r0==='mantenimiento'){
         $sql='SELECT hm.*,u.placa,u.tipo_unidad FROM historial_mantenimiento hm JOIN unidad u ON hm.id_unidad=u.id_unidad WHERE 1=1';
         $p=[];
         if($v=gget('id_unidad')){$sql.=' AND hm.id_unidad=?';$p[]=$v;}
-        if($v=gget('tipo_mant')||gget('tipo_mantenimiento')){$sql.=' AND hm.tipo_mantenimiento=?';$p[]=($v?:gget('tipo_mantenimiento'));}
-        $sql.=' ORDER BY hm.fecha_ejecucion DESC LIMIT 300';
+        if($v=gget('tipo_mantenimiento')){$sql.=' AND hm.tipo_mantenimiento=?';$p[]=$v;}
+        if($v=gget('categoria')){$sql.=' AND hm.tipo_mant_categoria=?';$p[]=$v;}
+        $sql.=' ORDER BY hm.fecha_ejecucion DESC LIMIT 500';
         jout(qall($sql,$p));
     }
     if($r1==='historial'&&$m==='POST'){
         $d=jbody();
-        $id=qexec('INSERT INTO historial_mantenimiento(id_unidad,fecha_ejecucion,tipo_mantenimiento,km_registro,horometro_registro,descripcion_trabajo,marca,costo_repuestos,costo_mano_obra)VALUES(?,?,?,?,?,?,?,?,?)',
-            [$d['id_unidad'],$d['fecha_ejecucion'],$d['tipo_mantenimiento'],$d['km_registro']??null,$d['horometro_registro']??null,$d['descripcion_trabajo'],$d['marca']??null,(float)($d['costo_repuestos']??0),(float)($d['costo_mano_obra']??0)]);
+        $cat=$d['tipo_mant_categoria']??'CORRECTIVO'; // PREVENTIVO o CORRECTIVO
+        $costo_rep=(float)($d['costo_repuestos']??0);
+        $costo_mo=(float)($d['costo_mano_obra']??0);
+        $id=qexec('INSERT INTO historial_mantenimiento(id_unidad,fecha_ejecucion,tipo_mantenimiento,tipo_mant_categoria,km_registro,horometro_registro,descripcion_trabajo,marca,costo_repuestos,costo_mano_obra,costo_total_soles)VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+            [$d['id_unidad'],$d['fecha_ejecucion'],$d['tipo_mantenimiento'],$cat,$d['km_registro']??null,$d['horometro_registro']??null,$d['descripcion_trabajo']??'',$d['marca']??null,$costo_rep,$costo_mo,round($costo_rep+$costo_mo,2)]);
         jout(['id_mantenimiento'=>(int)$id],201);
     }
     if($r1==='historial'&&$r2!==''&&$m==='PUT'){
         $d=jbody();
-        qrows('UPDATE historial_mantenimiento SET id_unidad=?,fecha_ejecucion=?,tipo_mantenimiento=?,km_registro=?,horometro_registro=?,descripcion_trabajo=?,marca=?,costo_repuestos=?,costo_mano_obra=? WHERE id_mantenimiento=?',
-            [$d['id_unidad'],$d['fecha_ejecucion'],$d['tipo_mantenimiento'],$d['km_registro']??null,$d['horometro_registro']??null,$d['descripcion_trabajo'],$d['marca']??null,(float)($d['costo_repuestos']??0),(float)($d['costo_mano_obra']??0),(int)$r2]);
+        $cat=$d['tipo_mant_categoria']??'CORRECTIVO';
+        $costo_rep=(float)($d['costo_repuestos']??0);
+        $costo_mo=(float)($d['costo_mano_obra']??0);
+        qrows('UPDATE historial_mantenimiento SET id_unidad=?,fecha_ejecucion=?,tipo_mantenimiento=?,tipo_mant_categoria=?,km_registro=?,horometro_registro=?,descripcion_trabajo=?,marca=?,costo_repuestos=?,costo_mano_obra=?,costo_total_soles=? WHERE id_mantenimiento=?',
+            [$d['id_unidad'],$d['fecha_ejecucion'],$d['tipo_mantenimiento'],$cat,$d['km_registro']??null,$d['horometro_registro']??null,$d['descripcion_trabajo']??'',$d['marca']??null,$costo_rep,$costo_mo,round($costo_rep+$costo_mo,2),(int)$r2]);
         jout(['ok'=>true]);
     }
     if($r1==='historial'&&$r2!==''&&$m==='DELETE'){
@@ -924,25 +931,60 @@ if($r0==='mantenimiento'){
         jout(['ok'=>true]);
     }
     if($r1==='alertas'){
+        // KM actual por unidad (flota)
         $kmMap=array_column(qall("SELECT id_unidad,MAX(km_retorno) AS v FROM control_flota WHERE km_retorno IS NOT NULL GROUP BY id_unidad"),'v','id_unidad');
+        // Horómetro actual por unidad (maquinaria)
         $hMap=array_column(qall("SELECT id_unidad,MAX(horometro_final) AS v FROM retro_control_dia WHERE horometro_final IS NOT NULL GROUP BY id_unidad"),'v','id_unidad');
         $hgeMap=array_column(qall("SELECT id_unidad,MAX(horometro) AS v FROM consumo_grupo_electrogeno WHERE horometro IS NOT NULL GROUP BY id_unidad"),'v','id_unidad');
-        $ultRows=qall("SELECT id_unidad,tipo_mantenimiento,MAX(km_registro) AS km_ult,MAX(horometro_registro) AS h_ult FROM historial_mantenimiento GROUP BY id_unidad,tipo_mantenimiento");
-        $mantMap=[];foreach($ultRows as $u2)$mantMap[$u2['id_unidad']][$u2['tipo_mantenimiento']]=$u2;
-        $planes=qall("SELECT pm.*,u.placa,u.tipo_unidad FROM plan_mantenimiento pm JOIN unidad u ON pm.id_unidad=u.id_unidad");
+
+        // Último mantenimiento por unidad+tarea (usando tarea = campo en plan_mantenimiento)
+        $ultRows=qall("SELECT id_unidad,tipo_mantenimiento,MAX(km_registro) AS km_ult,MAX(horometro_registro) AS h_ult,MAX(fecha_ejecucion) AS fecha_ult FROM historial_mantenimiento WHERE tipo_mant_categoria='PREVENTIVO' OR tipo_mantenimiento IN (SELECT tarea FROM plan_mantenimiento) GROUP BY id_unidad,tipo_mantenimiento");
+        $mantMap=[];
+        foreach($ultRows as $u2) $mantMap[$u2['id_unidad']][$u2['tipo_mantenimiento']]=$u2;
+
+        $planes=qall("SELECT pm.*,u.placa,u.tipo_unidad FROM plan_mantenimiento pm JOIN unidad u ON pm.id_unidad=u.id_unidad ORDER BY u.placa,pm.tarea");
         $result=[];
         foreach($planes as $p2){
-            $id_u=$p2['id_unidad'];$tipo=$p2['tipo_mantenimiento']??$p2['tarea'];
-            $fkm=(float)($p2['frecuencia_km']??0);$fh=(float)($p2['frecuencia_horas']??0);
-            $km_act=(float)($kmMap[$id_u]??0);$h_act=(float)($hMap[$id_u]??$hgeMap[$id_u]??0);
-            $ult=$mantMap[$id_u][$tipo]??null;
-            $km_ult=(float)($ult['km_ult']??0);$h_ult=(float)($ult['h_ult']??0);
-            $d_km=$fkm>0?$km_act-$km_ult:null;$d_h=$fh>0?$h_act-$h_ult:null;
-            $pct=max(($fkm>0&&$d_km!==null)?round($d_km/$fkm*100,1):0,($fh>0&&$d_h!==null)?round($d_h/$fh*100,1):0);
+            $id_u=(int)$p2['id_unidad'];
+            $tarea=$p2['tarea'];
+            $fkm=(float)($p2['frecuencia_km']??0);
+            $fh=(float)($p2['frecuencia_horas']??0);
+            $km_act=(float)($kmMap[$id_u]??0);
+            $h_act=(float)($hMap[$id_u]??$hgeMap[$id_u]??0);
+
+            // Buscar último mantenimiento de este tipo para esta unidad
+            $ult=$mantMap[$id_u][$tarea]??null;
+            $km_ult=(float)($ult['km_ult']??0);
+            $h_ult=(float)($ult['h_ult']??0);
+            $fecha_ult=$ult['fecha_ult']??null;
+
+            // Si nunca se hizo: delta = km_actual (desde 0)
+            $d_km=$fkm>0 ? ($km_act-$km_ult) : null;
+            $d_h=$fh>0  ? ($h_act-$h_ult)  : null;
+
+            // Porcentaje del intervalo consumido
+            $pct_km=$fkm>0&&$d_km!==null ? round($d_km/$fkm*100,1) : 0;
+            $pct_h=$fh>0&&$d_h!==null   ? round($d_h/$fh*100,1)   : 0;
+            $pct=max($pct_km,$pct_h);
+
+            // Estado
             $estado=$pct>=100?'VENCIDO':($pct>=90?'CRITICO':($pct>=75?'PROXIMO':'OK'));
-            $falta_km=$fkm>0?max(0,round($fkm-($d_km??0),0)):null;
-            $falta_h=$fh>0?max(0,round($fh-($d_h??0),1)):null;
-            $result[]=array_merge($p2,['km_actual'=>$km_act,'h_actual'=>$h_act,'km_ultimo'=>$km_ult,'h_ultimo'=>$h_ult,'delta_km'=>$d_km,'delta_h'=>$d_h,'pct'=>$pct,'estado'=>$estado,'falta_km'=>$falta_km,'falta_h'=>$falta_h]);
+
+            // Próximo mantenimiento en km/horas
+            $prox_km=$fkm>0 ? round($km_ult+$fkm,0) : null;
+            $prox_h=$fh>0  ? round($h_ult+$fh,1)  : null;
+            $falta_km=$fkm>0 ? max(0,round($prox_km-$km_act,0)) : null;
+            $falta_h=$fh>0  ? max(0,round($prox_h-$h_act,1))  : null;
+
+            $result[]=array_merge($p2,[
+                'km_actual'=>$km_act,'h_actual'=>$h_act,
+                'km_ultimo'=>$km_ult,'h_ultimo'=>$h_ult,'fecha_ultimo'=>$fecha_ult,
+                'km_proximo'=>$prox_km,'h_proximo'=>$prox_h,
+                'delta_km'=>$d_km,'delta_h'=>$d_h,
+                'pct'=>$pct,'pct_km'=>$pct_km,'pct_h'=>$pct_h,
+                'estado'=>$estado,
+                'falta_km'=>$falta_km,'falta_h'=>$falta_h,
+            ]);
         }
         usort($result,function($a,$b){ return $b['pct']<=>$a['pct']; });
         jout($result);
@@ -987,11 +1029,32 @@ if($r0==='mantenimiento'){
         }
         jout(['detalle'=>$rows,'resumen'=>$resumen]);
     }
-    if($r1==='documentos'&&$m==='GET')jout(qall("SELECT du.*,u.placa,u.tipo_unidad,DATEDIFF(du.fecha_vencimiento,CURDATE()) AS dias_restantes FROM documento_unidad du JOIN unidad u ON du.id_unidad=u.id_unidad ORDER BY dias_restantes ASC"));
+    if($r1==='documentos'&&$m==='GET'){
+        // Auto-actualizar campo vigente (boolean) según fecha actual
+        qrows('UPDATE documento_unidad SET vigente=0 WHERE fecha_vencimiento < CURDATE()');
+        qrows('UPDATE documento_unidad SET vigente=1 WHERE fecha_vencimiento >= CURDATE()');
+        // Solo mostrar el documento más reciente por tipo+unidad
+        $uid_f = gget('id_unidad');
+        $sql = "SELECT du.*,u.placa,u.tipo_unidad,
+                       DATEDIFF(du.fecha_vencimiento,CURDATE()) AS dias_restantes
+                FROM documento_unidad du
+                JOIN unidad u ON du.id_unidad=u.id_unidad
+                WHERE du.id_documento IN (
+                    SELECT MAX(d2.id_documento)
+                    FROM documento_unidad d2
+                    GROUP BY d2.id_unidad, d2.tipo_documento
+                )";
+        $p=[];
+        if($uid_f){$sql.=' AND du.id_unidad=?';$p[]=$uid_f;}
+        $sql.=' ORDER BY dias_restantes ASC';
+        jout(qall($sql,$p));
+    }
     if($r1==='documentos'&&$m==='POST'){
         $d=jbody();
-        $id=qexec('INSERT INTO documento_unidad(id_unidad,tipo_documento,fecha_emision,fecha_vencimiento,alerta_dias_antes,estado)VALUES(?,?,?,?,?,?)',
-            [$d['id_unidad'],$d['tipo_documento'],$d['fecha_emision']??null,$d['fecha_vencimiento'],$d['alerta_dias_antes']??30,'VIGENTE']);
+        $vence=$d['fecha_vencimiento']??date('Y-m-d');
+        $vigente=strtotime($vence)>=strtotime(date('Y-m-d'))?1:0;
+        $id=qexec('INSERT INTO documento_unidad(id_unidad,tipo_documento,fecha_emision,fecha_vencimiento,alerta_dias_antes,vigente)VALUES(?,?,?,?,?,?)',
+            [$d['id_unidad'],$d['tipo_documento'],$d['fecha_emision']??null,$vence,$d['alerta_dias_antes']??30,$vigente]);
         jout(['id_documento'=>(int)$id],201);
     }
     if($r1==='documentos'&&$r2!==''&&$m==='DELETE'){qrows('DELETE FROM documento_unidad WHERE id_documento=?',[(int)$r2]);jout(['ok'=>true]);}
@@ -1032,7 +1095,7 @@ if($r0==='dashboard'){
             [$fd,$fh]
         );
 
-        $ad = (int)(qval("SELECT COUNT(*) FROM documento_unidad WHERE DATEDIFF(fecha_vencimiento,CURDATE())<=alerta_dias_antes")??0);
+        $ad = (int)(qval("SELECT COUNT(*) FROM documento_unidad WHERE DATEDIFF(fecha_vencimiento,CURDATE())<=alerta_dias_antes AND vigente=1")??0);
         $sg = (float)(qval('SELECT saldo FROM movimientos_combustible ORDER BY id_movimiento DESC LIMIT 1')??0);
 
         jout([
