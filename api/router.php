@@ -910,11 +910,12 @@ if($r0==='mantenimiento'){
     }
     if($r1==='historial'&&$m==='POST'){
         $d=jbody();
-        $cat=$d['tipo_mant_categoria']??'CORRECTIVO'; // PREVENTIVO o CORRECTIVO
+        $cat=$d['tipo_mant_categoria']??'CORRECTIVO';
+        $id_plan=isset($d['id_plan'])&&$d['id_plan']?((int)$d['id_plan']):null;
         $costo_rep=(float)($d['costo_repuestos']??0);
         $costo_mo=(float)($d['costo_mano_obra']??0);
-        $id=qexec('INSERT INTO historial_mantenimiento(id_unidad,fecha_ejecucion,tipo_mantenimiento,tipo_mant_categoria,km_registro,horometro_registro,descripcion_trabajo,marca,costo_repuestos,costo_mano_obra,costo_total_soles)VALUES(?,?,?,?,?,?,?,?,?,?,?)',
-            [$d['id_unidad'],$d['fecha_ejecucion'],$d['tipo_mantenimiento'],$cat,$d['km_registro']??null,$d['horometro_registro']??null,$d['descripcion_trabajo']??'',$d['marca']??null,$costo_rep,$costo_mo,round($costo_rep+$costo_mo,2)]);
+        $id=qexec('INSERT INTO historial_mantenimiento(id_unidad,fecha_ejecucion,tipo_mantenimiento,tipo_mant_categoria,id_plan,km_registro,horometro_registro,descripcion_trabajo,marca,costo_repuestos,costo_mano_obra,costo_total_soles)VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+            [$d['id_unidad'],$d['fecha_ejecucion'],$d['tipo_mantenimiento'],$cat,$id_plan,$d['km_registro']??null,$d['horometro_registro']??null,$d['descripcion_trabajo']??'',$d['marca']??null,$costo_rep,$costo_mo,round($costo_rep+$costo_mo,2)]);
         jout(['id_mantenimiento'=>(int)$id],201);
     }
     if($r1==='historial'&&$r2!==''&&$m==='PUT'){
@@ -931,59 +932,105 @@ if($r0==='mantenimiento'){
         jout(['ok'=>true]);
     }
     if($r1==='alertas'){
-        // KM actual por unidad (flota)
-        $kmMap=array_column(qall("SELECT id_unidad,MAX(km_retorno) AS v FROM control_flota WHERE km_retorno IS NOT NULL GROUP BY id_unidad"),'v','id_unidad');
-        // Horómetro actual por unidad (maquinaria)
-        $hMap=array_column(qall("SELECT id_unidad,MAX(horometro_final) AS v FROM retro_control_dia WHERE horometro_final IS NOT NULL GROUP BY id_unidad"),'v','id_unidad');
-        $hgeMap=array_column(qall("SELECT id_unidad,MAX(horometro) AS v FROM consumo_grupo_electrogeno WHERE horometro IS NOT NULL GROUP BY id_unidad"),'v','id_unidad');
+        // KM actual por unidad
+        $kmMap=array_column(qall(
+            "SELECT id_unidad,MAX(km_retorno) AS v FROM control_flota
+             WHERE km_retorno IS NOT NULL GROUP BY id_unidad"
+        ),'v','id_unidad');
+        $hMap=array_column(qall(
+            "SELECT id_unidad,MAX(horometro_final) AS v FROM retro_control_dia
+             WHERE horometro_final IS NOT NULL GROUP BY id_unidad"
+        ),'v','id_unidad');
+        $hgeMap=array_column(qall(
+            "SELECT id_unidad,MAX(horometro) AS v FROM consumo_grupo_electrogeno
+             WHERE horometro IS NOT NULL GROUP BY id_unidad"
+        ),'v','id_unidad');
 
-        // Último mantenimiento por unidad+tarea (usando tarea = campo en plan_mantenimiento)
-        $ultRows=qall("SELECT id_unidad,tipo_mantenimiento,MAX(km_registro) AS km_ult,MAX(horometro_registro) AS h_ult,MAX(fecha_ejecucion) AS fecha_ult FROM historial_mantenimiento WHERE tipo_mant_categoria='PREVENTIVO' OR tipo_mantenimiento IN (SELECT tarea FROM plan_mantenimiento) GROUP BY id_unidad,tipo_mantenimiento");
-        $mantMap=[];
-        foreach($ultRows as $u2) $mantMap[$u2['id_unidad']][$u2['tipo_mantenimiento']]=$u2;
+        // Último historial por id_plan (relación directa)
+        // Si no tiene id_plan, fallback por tipo_mantenimiento+unidad
+        $planHistorial=array_column(qall(
+            "SELECT hm.id_plan,
+                    hm.id_unidad,
+                    hm.km_registro    AS km_ult,
+                    hm.horometro_registro AS h_ult,
+                    hm.fecha_ejecucion AS fecha_ult,
+                    hm.id_mantenimiento
+             FROM historial_mantenimiento hm
+             INNER JOIN (
+                 SELECT id_plan,MAX(id_mantenimiento) AS max_id
+                 FROM historial_mantenimiento
+                 WHERE id_plan IS NOT NULL
+                 GROUP BY id_plan
+             ) ult ON hm.id_mantenimiento=ult.max_id
+             WHERE hm.id_plan IS NOT NULL"
+        ),'id_plan',null);
+        // Convertir a map por id_plan
+        $planMap=[];
+        foreach($planHistorial as $ph){ $planMap[$ph['id_plan']]=$ph; }
 
-        $planes=qall("SELECT pm.*,u.placa,u.tipo_unidad FROM plan_mantenimiento pm JOIN unidad u ON pm.id_unidad=u.id_unidad ORDER BY u.placa,pm.tarea");
+        // Fallback: último por tipo_mantenimiento normalizado (para registros sin id_plan)
+        $fallbackRows=qall(
+            "SELECT hm.id_unidad,TRIM(UPPER(hm.tipo_mantenimiento)) AS tarea_norm,
+                    hm.km_registro AS km_ult,hm.horometro_registro AS h_ult,hm.fecha_ejecucion AS fecha_ult
+             FROM historial_mantenimiento hm
+             INNER JOIN (
+                SELECT id_unidad,TRIM(UPPER(tipo_mantenimiento)) AS tarea_norm,MAX(id_mantenimiento) AS max_id
+                FROM historial_mantenimiento
+                WHERE id_plan IS NULL
+                GROUP BY id_unidad,TRIM(UPPER(tipo_mantenimiento))
+             ) fb ON hm.id_unidad=fb.id_unidad AND TRIM(UPPER(hm.tipo_mantenimiento))=fb.tarea_norm AND hm.id_mantenimiento=fb.max_id"
+        );
+        $fallbackMap=[];
+        foreach($fallbackRows as $fb){ $fallbackMap[$fb['id_unidad']][trim(strtoupper($fb['tarea_norm']))]=$fb; }
+
+        $planes=qall(
+            "SELECT pm.*,u.placa,u.tipo_unidad
+             FROM plan_mantenimiento pm
+             JOIN unidad u ON pm.id_unidad=u.id_unidad
+             ORDER BY u.placa,pm.tarea"
+        );
         $result=[];
         foreach($planes as $p2){
-            $id_u=(int)$p2['id_unidad'];
-            $tarea=$p2['tarea'];
-            $fkm=(float)($p2['frecuencia_km']??0);
-            $fh=(float)($p2['frecuencia_horas']??0);
-            $km_act=(float)($kmMap[$id_u]??0);
-            $h_act=(float)($hMap[$id_u]??$hgeMap[$id_u]??0);
+            $id_u     = (int)$p2['id_unidad'];
+            $id_plan  = (int)$p2['id_plan'];
+            $tarea    = $p2['tarea'];
+            $fkm      = (float)($p2['frecuencia_km']??0);
+            $fh       = (float)($p2['frecuencia_horas']??0);
+            $km_act   = (float)($kmMap[$id_u]??0);
+            $h_act    = (float)($hMap[$id_u]??$hgeMap[$id_u]??0);
 
-            // Buscar último mantenimiento de este tipo para esta unidad
-            $ult=$mantMap[$id_u][$tarea]??null;
-            $km_ult=(float)($ult['km_ult']??0);
-            $h_ult=(float)($ult['h_ult']??0);
-            $fecha_ult=$ult['fecha_ult']??null;
+            // Buscar último: primero por id_plan, luego fallback por nombre
+            $ult = $planMap[$id_plan]
+                ?? $fallbackMap[$id_u][trim(strtoupper($tarea))]
+                ?? null;
 
-            // Si nunca se hizo: delta = km_actual (desde 0)
-            $d_km=$fkm>0 ? ($km_act-$km_ult) : null;
-            $d_h=$fh>0  ? ($h_act-$h_ult)  : null;
+            $km_ult   = (float)($ult['km_ult']??0);
+            $h_ult    = (float)($ult['h_ult']??0);
+            $fecha_ult= $ult['fecha_ult']??null;
 
-            // Porcentaje del intervalo consumido
-            $pct_km=$fkm>0&&$d_km!==null ? round($d_km/$fkm*100,1) : 0;
-            $pct_h=$fh>0&&$d_h!==null   ? round($d_h/$fh*100,1)   : 0;
-            $pct=max($pct_km,$pct_h);
+            $d_km = $fkm>0 ? ($km_act-$km_ult) : null;
+            $d_h  = $fh>0  ? ($h_act-$h_ult)   : null;
 
-            // Estado
-            $estado=$pct>=100?'VENCIDO':($pct>=90?'CRITICO':($pct>=75?'PROXIMO':'OK'));
+            $pct_km = $fkm>0&&$d_km!==null ? round($d_km/$fkm*100,1) : 0;
+            $pct_h  = $fh>0&&$d_h!==null   ? round($d_h/$fh*100,1)   : 0;
+            $pct    = max($pct_km,$pct_h);
 
-            // Próximo mantenimiento en km/horas
-            $prox_km=$fkm>0 ? round($km_ult+$fkm,0) : null;
-            $prox_h=$fh>0  ? round($h_ult+$fh,1)  : null;
-            $falta_km=$fkm>0 ? max(0,round($prox_km-$km_act,0)) : null;
-            $falta_h=$fh>0  ? max(0,round($prox_h-$h_act,1))  : null;
+            $estado = $pct>=100?'VENCIDO':($pct>=90?'CRITICO':($pct>=75?'PROXIMO':'OK'));
+
+            $prox_km  = $fkm>0 ? round($km_ult+$fkm,0) : null;
+            $prox_h   = $fh>0  ? round($h_ult+$fh,1)   : null;
+            $falta_km = $fkm>0 ? max(0,round(($prox_km??0)-$km_act,0)) : null;
+            $falta_h  = $fh>0  ? max(0,round(($prox_h??0)-$h_act,1))   : null;
 
             $result[]=array_merge($p2,[
-                'km_actual'=>$km_act,'h_actual'=>$h_act,
-                'km_ultimo'=>$km_ult,'h_ultimo'=>$h_ult,'fecha_ultimo'=>$fecha_ult,
-                'km_proximo'=>$prox_km,'h_proximo'=>$prox_h,
-                'delta_km'=>$d_km,'delta_h'=>$d_h,
-                'pct'=>$pct,'pct_km'=>$pct_km,'pct_h'=>$pct_h,
-                'estado'=>$estado,
-                'falta_km'=>$falta_km,'falta_h'=>$falta_h,
+                'km_actual'    =>$km_act,  'h_actual'     =>$h_act,
+                'km_ultimo'    =>$km_ult,  'h_ultimo'     =>$h_ult,  'fecha_ultimo'=>$fecha_ult,
+                'km_proximo'   =>$prox_km, 'h_proximo'    =>$prox_h,
+                'delta_km'     =>$d_km,    'delta_h'      =>$d_h,
+                'pct'          =>$pct,     'pct_km'       =>$pct_km, 'pct_h'=>$pct_h,
+                'estado'       =>$estado,
+                'falta_km'     =>$falta_km,'falta_h'      =>$falta_h,
+                'tiene_historial'=>($ult!==null),
             ]);
         }
         usort($result,function($a,$b){ return $b['pct']<=>$a['pct']; });

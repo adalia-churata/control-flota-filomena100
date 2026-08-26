@@ -353,32 +353,71 @@ function renderAlertas() {
     if(m.falta_km)     proxInfo += ' <span style="color:var(--text3)">( faltan ' + fmt.num(m.falta_km,0) + ' km)</span>';
     if(m.falta_h)      proxInfo += ' <span style="color:var(--text3)">( faltan ' + fmt.num(m.falta_h,1) + ' h)</span>';
 
+    // Línea de km: actual → último mantenimiento → próximo
+    var kmLine = '';
+    if (m.frecuencia_km) {
+      kmLine = '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px;margin-top:8px">' +
+        '<span style="color:var(--text2)">km último mant.:</span>' +
+        '<strong>' + (m.km_ultimo ? fmt.num(m.km_ultimo,0) : '—') + '</strong>' +
+        '<span style="color:var(--text3)">→</span>' +
+        '<span style="color:var(--text2)">km actual:</span>' +
+        '<strong style="color:var(--brand)">' + fmt.num(m.km_actual,0) + '</strong>' +
+        '<span style="color:var(--text3)">→</span>' +
+        '<span style="color:var(--text2)">próximo:</span>' +
+        '<strong style="color:' + color + '">' + (m.km_proximo ? fmt.num(m.km_proximo,0) : '—') + '</strong>' +
+        (m.falta_km !== null && m.falta_km > 0
+          ? '<span style="background:' + color + ';color:#fff;border-radius:4px;padding:1px 6px;font-size:11px">faltan ' + fmt.num(m.falta_km,0) + ' km</span>'
+          : m.falta_km === 0 || (m.km_actual >= m.km_proximo)
+            ? '<span style="background:var(--danger);color:#fff;border-radius:4px;padding:1px 6px;font-size:11px">¡Ya superado!</span>'
+            : '') +
+      '</div>';
+    }
+    var hLine = '';
+    if (m.frecuencia_horas) {
+      hLine = '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px;margin-top:4px">' +
+        '<span style="color:var(--text2)">Horóm. último:</span>' +
+        '<strong>' + (m.h_ultimo ? fmt.num(m.h_ultimo,1) : '—') + ' h</strong>' +
+        '<span style="color:var(--text3)">→</span>' +
+        '<span style="color:var(--text2)">actual:</span>' +
+        '<strong style="color:var(--brand)">' + fmt.num(m.h_actual,1) + ' h</strong>' +
+        '<span style="color:var(--text3)">→</span>' +
+        '<span style="color:var(--text2)">próximo:</span>' +
+        '<strong style="color:' + color + '">' + (m.h_proximo ? fmt.num(m.h_proximo,1) : '—') + ' h</strong>' +
+        (m.falta_h !== null && m.falta_h > 0
+          ? '<span style="background:' + color + ';color:#fff;border-radius:4px;padding:1px 6px;font-size:11px">faltan ' + fmt.num(m.falta_h,1) + ' h</span>'
+          : '') +
+      '</div>';
+    }
     var ultInfo = m.fecha_ultimo
-      ? 'Último: ' + fmtFecha(m.fecha_ultimo) + (m.km_ultimo?' · km '+fmt.num(m.km_ultimo,0):'') + (m.h_ultimo?' · '+fmt.num(m.h_ultimo,1)+' h':'')
-      : 'Sin registros previos';
+      ? '<span style="color:var(--text3)">Realizado: ' + fmtFecha(m.fecha_ultimo) + '</span>'
+      : '<span style="color:var(--danger);font-size:11px">⚠ Sin registros previos — se calcula desde km 0</span>';
 
     html +=
       '<div style="background:' + bgColor + ';border:1.5px solid ' + color + ';border-radius:10px;padding:14px 16px">' +
         '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">' +
           '<div style="flex:1">' +
-            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">' +
+            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
               badge +
               '<strong style="font-size:14px">' + m.tarea + '</strong>' +
               '<span class="text-muted text-sm">— ' + m.placa + '</span>' +
             '</div>' +
-            '<div style="margin-bottom:6px">' +
-              '<div style="height:8px;background:rgba(0,0,0,.1);border-radius:999px;overflow:hidden;width:100%;max-width:400px">' +
-                '<div style="height:100%;width:' + Math.min(m.pct,100) + '%;background:' + color + ';border-radius:999px;transition:width .3s"></div>' +
+            '<div style="margin-bottom:8px">' +
+              '<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3);margin-bottom:2px">' +
+                '<span>' + fmt.num(m.pct,1) + '% del intervalo consumido</span>' +
+                (m.frecuencia_km ? '<span>cada ' + fmt.num(m.frecuencia_km,0) + ' km</span>' : '') +
+                (m.frecuencia_horas ? '<span>cada ' + fmt.num(m.frecuencia_horas,1) + ' h</span>' : '') +
               '</div>' +
-              '<div style="font-size:11px;color:var(--text3);margin-top:2px">' + fmt.num(m.pct,1) + '% del intervalo consumido</div>' +
+              '<div style="height:10px;background:rgba(0,0,0,.1);border-radius:999px;overflow:hidden;width:100%">' +
+                '<div style="height:100%;width:' + Math.min(m.pct,100) + '%;background:' + color + ';border-radius:999px"></div>' +
+              '</div>' +
             '</div>' +
-            '<div style="font-size:12px;color:var(--text2)">' + proxInfo + '</div>' +
-            '<div style="font-size:11px;color:var(--text3);margin-top:2px">' + ultInfo + '</div>' +
+            kmLine + hLine +
+            '<div style="margin-top:6px;font-size:11px">' + ultInfo + '</div>' +
           '</div>' +
-          (m.estado !== 'OK' ?
-            '<button class="btn btn-primary btn-sm" onclick="abrirModalCompletar(' + JSON.stringify(m).replace(/"/g,'&quot;') + ')">' +
-              '✅ Registrar realizado' +
-            '</button>' : '') +
+          '<button class="btn btn-sm" style="background:' + color + ';color:#fff;white-space:nowrap;flex-shrink:0" ' +
+            'onclick="abrirModalCompletar(' + JSON.stringify(m).replace(/"/g,'&quot;') + ')">' +
+            (m.estado === 'OK' ? '📋 Registrar' : '✅ Marcar realizado') +
+          '</button>' +
         '</div>' +
       '</div>';
   });
@@ -422,6 +461,7 @@ async function guardarCompletado() {
     fecha_ejecucion:    document.getElementById('comp-fecha').value,
     tipo_mantenimiento: plan.tarea,
     tipo_mant_categoria:'PREVENTIVO',
+    id_plan:            plan.id_plan,
     km_registro:        document.getElementById('comp-km').value || null,
     horometro_registro: document.getElementById('comp-horom').value || null,
     descripcion_trabajo:document.getElementById('comp-desc').value,
