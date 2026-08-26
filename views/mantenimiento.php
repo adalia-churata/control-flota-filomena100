@@ -374,7 +374,14 @@ function renderAlertas() {
     }
     var hLine = '';
     if (m.frecuencia_horas) {
+      var diasTag = '';
+      if (m.es_ge && m.dias_restantes !== null && m.dias_restantes > 0) {
+        diasTag = '<span style="background:var(--brand);color:#fff;border-radius:4px;padding:1px 8px;font-size:11px;font-weight:700">≈ ' + m.dias_restantes + ' días</span>';
+      } else if (m.es_ge && (m.falta_h === 0 || m.falta_h < 0)) {
+        diasTag = '<span style="background:var(--danger);color:#fff;border-radius:4px;padding:1px 8px;font-size:11px">¡Mantenimiento urgente!</span>';
+      }
       hLine = '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px;margin-top:4px">' +
+        (m.es_ge ? '<span style="font-size:11px;background:var(--brand-lt);color:var(--brand);border-radius:4px;padding:1px 6px;font-weight:700">⚡ 24/7</span>' : '') +
         '<span style="color:var(--text2)">Horóm. último:</span>' +
         '<strong>' + (m.h_ultimo ? fmt.num(m.h_ultimo,1) : '—') + ' h</strong>' +
         '<span style="color:var(--text3)">→</span>' +
@@ -386,6 +393,7 @@ function renderAlertas() {
         (m.falta_h !== null && m.falta_h > 0
           ? '<span style="background:' + color + ';color:#fff;border-radius:4px;padding:1px 6px;font-size:11px">faltan ' + fmt.num(m.falta_h,1) + ' h</span>'
           : '') +
+        diasTag +
       '</div>';
     }
     var ultInfo = m.fecha_ultimo
@@ -396,8 +404,9 @@ function renderAlertas() {
       '<div style="background:' + bgColor + ';border:1.5px solid ' + color + ';border-radius:10px;padding:14px 16px">' +
         '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">' +
           '<div style="flex:1">' +
-            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+            '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">' +
               badge +
+              (m.es_ge ? '<span style="background:#1a3a5c;color:#fff;border-radius:4px;padding:1px 7px;font-size:11px;font-weight:700">⚡ GE 24/7</span>' : '') +
               '<strong style="font-size:14px">' + m.tarea + '</strong>' +
               '<span class="text-muted text-sm">— ' + m.placa + '</span>' +
             '</div>' +

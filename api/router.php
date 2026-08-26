@@ -1015,12 +1015,22 @@ if($r0==='mantenimiento'){
             $pct_h  = $fh>0&&$d_h!==null   ? round($d_h/$fh*100,1)   : 0;
             $pct    = max($pct_km,$pct_h);
 
-            $estado = $pct>=100?'VENCIDO':($pct>=90?'CRITICO':($pct>=75?'PROXIMO':'OK'));
+            // GE prendidos 24/7 → alertar más temprano (70% PROXIMO, 85% CRITICO)
+            $es_ge = ($p2['tipo_unidad']==='GRUPO ELECTROGENO');
+            $umbral_proximo = $es_ge ? 70 : 75;
+            $umbral_critico = $es_ge ? 85 : 90;
+            $estado = $pct>=100?'VENCIDO':($pct>=$umbral_critico?'CRITICO':($pct>=$umbral_proximo?'PROXIMO':'OK'));
 
             $prox_km  = $fkm>0 ? round($km_ult+$fkm,0) : null;
             $prox_h   = $fh>0  ? round($h_ult+$fh,1)   : null;
             $falta_km = $fkm>0 ? max(0,round(($prox_km??0)-$km_act,0)) : null;
             $falta_h  = $fh>0  ? max(0,round(($prox_h??0)-$h_act,1))   : null;
+
+            // Para GE: estimar días restantes (24h/día de uso)
+            $dias_rest = null;
+            if($es_ge && $falta_h!==null && $falta_h>0){
+                $dias_rest = round($falta_h/24, 1); // horas restantes / 24h
+            }
 
             $result[]=array_merge($p2,[
                 'km_actual'    =>$km_act,  'h_actual'     =>$h_act,
@@ -1030,6 +1040,8 @@ if($r0==='mantenimiento'){
                 'pct'          =>$pct,     'pct_km'       =>$pct_km, 'pct_h'=>$pct_h,
                 'estado'       =>$estado,
                 'falta_km'     =>$falta_km,'falta_h'      =>$falta_h,
+                'dias_restantes'=>$dias_rest,
+                'es_ge'        =>$es_ge,
                 'tiene_historial'=>($ult!==null),
             ]);
         }
