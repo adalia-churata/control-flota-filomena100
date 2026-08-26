@@ -875,26 +875,52 @@ function renderViajesPend(data) {
   }).join('');
 }
 
-function seleccionarViaje(id) {
+async function seleccionarViaje(id) {
   document.getElementById('asign-viaje-sel').value = id;
   mostrarDetalleViaje();
   document.getElementById('panel-asign-selects').scrollIntoView({behavior:'smooth'});
-  // Auto-sugerir compra correcta según lógica km
-  const v = asignViajesCache.find(function(x){ return x.id_control==id; });
-  if (!v || !v.km_salida) return;
+
+  var v = asignViajesCache.find(function(x){ return x.id_control==id; });
+  if (!v) return;
   var kmS = parseFloat(v.km_salida||0);
   var kmR = parseFloat(v.km_retorno||0);
-  var MARGEN = 4;
-  // Buscar entre compras del mismo vehículo la que cumple las 2 condiciones
-  var sugerida = null;
-  var candidatos = asignComprasCache.filter(function(cc) {
-    return cc.id_unidad == v.id_unidad && cc.tipo_combustible === 'PETROLEO' && cc.km_vehiculo != null;
-  }).sort(function(a,b){ return parseFloat(a.km_vehiculo)-parseFloat(b.km_vehiculo); });
-  for (var i=0; i<candidatos.length; i++) {
-    var kmT = parseFloat(candidatos[i].km_vehiculo);
-    var dif = kmR - kmT;
-    if (kmT > kmS && (kmR===0 || dif<=MARGEN)) { sugerida=candidatos[i]; break; }
-  }
+
+  // Cargar compras candidatas con flags cond1/cond2/ya_asignado del servidor
+  var url = '/api/garita/compras-para-asignar?id_unidad=' + v.id_unidad +
+            '&km_salida=' + kmS + '&km_retorno=' + kmR + '&id_control=' + id;
+  try {
+    var compras = await api(url);
+    var sugeridas = compras.filter(function(cc){ return cc.sugerido==1; });
+
+    var selC = document.getElementById('asign-comb-sel');
+    selC.innerHTML = '<option value="">— Seleccionar compra —</option>';
+    compras.forEach(function(cc) {
+      var prefix = cc.ya_asignado ? '✓ YA ASIG · '
+                 : cc.sugerido   ? '⭐ SUGERIDA · ' : '';
+      selC.insertAdjacentHTML('beforeend',
+        '<option value="' + cc.id_combustible + '">' +
+        prefix + fmtFecha(cc.fecha) + ' · km ' +
+        (cc.km_vehiculo!=null?fmt.num(cc.km_vehiculo,1):'—') +
+        ' · ' + fmt.num(cc.cantidad_gll,1) + ' gll · ' + fmt.sol(cc.total) +
+        '</option>');
+    });
+
+    var msg = document.getElementById('asign-sugerido-msg');
+    if (sugeridas.length > 0) {
+      selC.value = sugeridas[0].id_combustible;
+      msg.style.color = 'var(--brand)';
+      msg.textContent = sugeridas.length === 1
+        ? '⭐ Compra sugerida: ' + fmtFecha(sugeridas[0].fecha) + ' · km ' +
+          fmt.num(sugeridas[0].km_vehiculo,1) + ' · ' + fmt.num(sugeridas[0].cantidad_gll,1) + ' gll'
+        : '⭐ ' + sugeridas.length + ' tanqueos para este viaje — asígnalos uno a uno';
+      msg.style.display = 'block';
+    } else {
+      msg.style.color = 'var(--warn)';
+      msg.textContent = '⚠ Sin tanqueo automático — selecciona la compra manualmente';
+      msg.style.display = 'block';
+    }
+  } catch(e) { console.error(e); }
+}
   if (sugerida) {
     document.getElementById('asign-comb-sel').value = sugerida.id_combustible;
     document.getElementById('asign-sugerido-msg').textContent =
@@ -943,14 +969,19 @@ async function reasignarVacios() {
 }
 
 async function asignarViajeManual() {
-  const id_ctrl = document.getElementById('asign-viaje-sel').value;
-  const id_comb = document.getElementById('asign-comb-sel').value;
+  var id_ctrl = document.getElementById('asign-viaje-sel').value;
+  var id_comb = document.getElementById('asign-comb-sel').value;
   if (!id_ctrl || !id_comb) { toast('Selecciona viaje y compra','error'); return; }
   try {
-    await api('/api/compras/asignar-viaje',{method:'POST',body:JSON.stringify({id_control:+id_ctrl,id_combustible:+id_comb})});
-    toast('Asignado correctamente','ok');
-    document.getElementById('asign-sugerido-msg').style.display='none';
-    cargarViajesPendientes();
+    // Usar 'agregar' para soportar múltiples tanqueos por viaje
+    await api('/api/compras/asignar-viaje',{method:'POST',body:JSON.stringify({
+      id_control:    +id_ctrl,
+      id_combustible:+id_comb,
+      accion:        'agregar'
+    })});
+    toast('Combustible asignado al viaje','ok');
+    // Recargar compras sugeridas para ver si quedan más por asignar
+    await seleccionarViaje(id_ctrl);
     cargarCompras();
   } catch(e) { toast('Error: '+e.message,'error'); }
 }

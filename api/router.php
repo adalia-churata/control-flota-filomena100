@@ -98,8 +98,13 @@ if($r0==='garita'){
         }
         $id=qexec('INSERT INTO control_flota(fecha,id_unidad,id_conductor,hora_salida,hora_regreso,id_ruta,km_salida,km_retorno,tipo_actividad,observacion,km_recorrido,desviacion,estado_ruta)VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
             [$d['fecha']??date('Y-m-d'),$d['id_unidad'],$d['id_conductor']??null,$d['hora_salida']??null,$d['hora_regreso']??null,$d['id_ruta']??null,$d['km_salida']??null,$d['km_retorno']??null,$d['tipo_actividad']??null,$d['observacion']??null,$km_rec,$desv,$estado]);
-        qexec('INSERT INTO detalle_consumo(id_combustible,id_control,km_recorridos)VALUES(NULL,?,?)',[$id,$km_rec]);
-        jout(['id_control'=>(int)$id,'km_recorrido'=>$km_rec,'estado_ruta'=>$estado],201);
+        // Intentar asignar combustible automáticamente por lógica de km
+        $asig_viaje = run_assignment_viaje((int)$id,(int)$d['id_unidad'],(float)($d['km_salida']??0),(float)($d['km_retorno']??0));
+        // Si no se asignó, igual crear fila en detalle_consumo con NULL para que Power BI vea el viaje
+        if(!$asig_viaje['asignado']){
+            qexec('INSERT INTO detalle_consumo(id_combustible,id_control,km_recorridos)VALUES(NULL,?,?)',[$id,$km_rec]);
+        }
+        jout(['id_control'=>(int)$id,'km_recorrido'=>$km_rec,'estado_ruta'=>$estado,'asignacion'=>$asig_viaje],201);
     }
     if($r1==='viajes'&&$r2!==''&&$m==='PUT'){
         $id=(int)$r2;$d=jbody();
@@ -159,35 +164,52 @@ if($r0==='garita'){
         $id_u  = gget('id_unidad');
         $km_s  = (float)(gget('km_salida',  0));
         $km_r  = (float)(gget('km_retorno', 0));
-        $margen= (float)(gget('margen', 4));   // default 4 km
+        $margen= (float)(gget('margen', 4));
+        $id_ctrl = gget('id_control');
         if(!$id_u) jout(['error'=>'id_unidad requerido'], 400);
 
+        // Ya asignados a este viaje (para marcarlos)
+        $ya_asignados = [];
+        if($id_ctrl){
+            $rows = qall('SELECT id_combustible FROM detalle_consumo WHERE id_control=? AND id_combustible IS NOT NULL',[$id_ctrl]);
+            $ya_asignados = array_column($rows,'id_combustible');
+        }
+
         $compras = qall(
-            "SELECT cc.id_combustible, cc.fecha, cc.nro_comprobante, cc.cantidad_gll,
-                    cc.km_vehiculo, cc.precio_unitario, cc.total,
+            "SELECT cc.id_combustible, cc.fecha, cc.nro_comprobante, cc.tipo_comprobante,
+                    cc.cantidad_gll, cc.km_vehiculo, cc.precio_unitario, cc.total, cc.tanqueo,
                     (SELECT COUNT(*) FROM detalle_consumo dc2
                      WHERE dc2.id_combustible=cc.id_combustible) AS viajes_asignados,
 
-                    CASE WHEN cc.km_vehiculo = (
-                        SELECT MIN(cx.km_vehiculo)
-                        FROM compra_combustible cx
-                        WHERE cx.id_unidad        = cc.id_unidad
-                          AND cx.tipo_combustible = 'PETROLEO'
-                          AND cx.km_vehiculo      > ?
-                          AND (? - cx.km_vehiculo) <= ?
-                    ) THEN 1 ELSE 0 END AS sugerido,
+                    -- Cumple condición 1: km_tanqueo >= km_salida
+                    CASE WHEN cc.km_vehiculo >= ? THEN 1 ELSE 0 END AS cond1_ok,
+
+                    -- Cumple condición 2: km_retorno - km_tanqueo <= margen (o sin retorno)
+                    CASE WHEN ? = 0 OR (? - cc.km_vehiculo) <= ?
+                         THEN 1 ELSE 0 END AS cond2_ok,
 
                     (? - cc.km_vehiculo) AS dif_retorno
+
              FROM compra_combustible cc
              WHERE cc.id_unidad        = ?
                AND cc.tipo_combustible = 'PETROLEO'
+               AND cc.tanqueo          = 1
                AND cc.km_vehiculo      IS NOT NULL
              ORDER BY cc.km_vehiculo DESC
-             LIMIT 20",
-            [$km_s, $km_r, $margen,   // para la subconsulta sugerido
-             $km_r,                    // para dif_retorno
+             LIMIT 30",
+            [$km_s,
+             $km_r, $km_r, $margen,
+             $km_r,
              $id_u]
         );
+
+        // Marcar sugeridas (cumplen ambas condiciones) y ya asignadas
+        foreach($compras as &$cp){
+            $cp['sugerido']    = ((int)$cp['cond1_ok'] && (int)$cp['cond2_ok']) ? 1 : 0;
+            $cp['ya_asignado'] = in_array($cp['id_combustible'], $ya_asignados) ? 1 : 0;
+        }
+        unset($cp);
+
         jout($compras);
     }
 }
@@ -405,7 +427,10 @@ if($r0==='compras'){
             $tiene=(int)(qval('SELECT COUNT(*) FROM detalle_consumo WHERE id_control=?',[$id_ctrl])??0);
             if($solo_vacios&&$tiene>0){$saltados++;continue;}
             $candidatas=qall(
-                "SELECT id_combustible,km_vehiculo FROM compra_combustible WHERE id_unidad=? AND tipo_combustible='PETROLEO' AND km_vehiculo IS NOT NULL AND km_vehiculo>? ORDER BY km_vehiculo ASC",
+                "SELECT id_combustible,km_vehiculo FROM compra_combustible
+                 WHERE id_unidad=? AND tipo_combustible='PETROLEO'
+                   AND tanqueo=1 AND km_vehiculo IS NOT NULL AND km_vehiculo>=?
+                 ORDER BY km_vehiculo ASC",
                 [$id_u,$km_sal]
             );
             $mejor=null;
@@ -414,9 +439,17 @@ if($r0==='compras'){
                 if($dif<=$MARGEN){$mejor=$cp;break;}
             }
             if(!$mejor){$saltados++;continue;}
-            if($tiene>0)qrows('DELETE FROM detalle_consumo WHERE id_control=?',[$id_ctrl]);
-            $ex=(int)(qval('SELECT COUNT(*) FROM detalle_consumo WHERE id_control=? AND id_combustible=?',[$id_ctrl,$mejor['id_combustible']])??0);
-            if(!$ex){qrows('INSERT INTO detalle_consumo(id_control,id_combustible) VALUES(?,?)',[$id_ctrl,$mejor['id_combustible']]);$asignados++;}
+            // Solo asignar si no tiene ningún combustible real asignado
+            $tiene_real=(int)(qval('SELECT COUNT(*) FROM detalle_consumo WHERE id_control=? AND id_combustible IS NOT NULL',[$id_ctrl])??0);
+            if($tiene_real>0){$saltados++;continue;}
+            // Actualizar la fila NULL existente o insertar nueva
+            $fila_null=qone('SELECT id_detalle FROM detalle_consumo WHERE id_control=? AND id_combustible IS NULL LIMIT 1',[$id_ctrl]);
+            if($fila_null){
+                qrows('UPDATE detalle_consumo SET id_combustible=? WHERE id_detalle=?',[$mejor['id_combustible'],$fila_null['id_detalle']]);
+            } else {
+                qexec('INSERT INTO detalle_consumo(id_control,id_combustible) VALUES(?,?)',[$id_ctrl,$mejor['id_combustible']]);
+            }
+            $asignados++;
         }
         jout(['ok'=>true,'asignados'=>$asignados,'saltados'=>$saltados,'total'=>count($viajes)]);
     }
@@ -425,15 +458,39 @@ if($r0==='compras'){
         $d=jbody();
         $id_ctrl=(int)($d['id_control']??0);
         $id_comb=$d['id_combustible']!==null?(int)$d['id_combustible']:null;
+        $accion=$d['accion']??'asignar'; // 'asignar', 'agregar', 'quitar'
         if(!$id_ctrl)jout(['error'=>'id_control requerido'],400);
-        $det=qone('SELECT id_detalle FROM detalle_consumo WHERE id_control=?',[$id_ctrl]);
-        if($det){
-            qrows('UPDATE detalle_consumo SET id_combustible=? WHERE id_control=?',[$id_comb,$id_ctrl]);
-        }else{
-            $cf=qone('SELECT km_recorrido FROM control_flota WHERE id_control=?',[$id_ctrl]);
-            qexec('INSERT INTO detalle_consumo(id_combustible,id_control,km_recorridos)VALUES(?,?,?)',[$id_comb,$id_ctrl,$cf['km_recorrido']??null]);
+        $cf=qone('SELECT km_recorrido FROM control_flota WHERE id_control=?',[$id_ctrl]);
+        $km=$cf['km_recorrido']??null;
+
+        if($accion==='agregar'&&$id_comb){
+            // Agregar un combustible adicional al viaje (sin borrar los existentes)
+            $existe=qval('SELECT COUNT(*) FROM detalle_consumo WHERE id_control=? AND id_combustible=?',[$id_ctrl,$id_comb]);
+            if(!(int)$existe){
+                qexec('INSERT INTO detalle_consumo(id_combustible,id_control,km_recorridos)VALUES(?,?,?)',[$id_comb,$id_ctrl,$km]);
+            }
+        } elseif($accion==='quitar'&&$id_comb){
+            // Quitar solo este combustible del viaje
+            qrows('DELETE FROM detalle_consumo WHERE id_control=? AND id_combustible=?',[$id_ctrl,$id_comb]);
+            // Si quedó sin ningún combustible, insertar NULL para mantener el viaje visible
+            $quedan=(int)(qval('SELECT COUNT(*) FROM detalle_consumo WHERE id_control=?',[$id_ctrl])??0);
+            if(!$quedan){
+                qexec('INSERT INTO detalle_consumo(id_combustible,id_control,km_recorridos)VALUES(NULL,?,?)',[$id_ctrl,$km]);
+            }
+        } elseif($accion==='reemplazar'){
+            // Reemplazar TODA la asignación por este combustible
+            qrows('DELETE FROM detalle_consumo WHERE id_control=?',[$id_ctrl]);
+            qexec('INSERT INTO detalle_consumo(id_combustible,id_control,km_recorridos)VALUES(?,?,?)',[$id_comb??null,$id_ctrl,$km]);
+        } else {
+            // Comportamiento original: asignar/actualizar primera fila
+            $det=qone('SELECT id_detalle FROM detalle_consumo WHERE id_control=?',[$id_ctrl]);
+            if($det){
+                qrows('UPDATE detalle_consumo SET id_combustible=? WHERE id_detalle=?',[$id_comb,$det['id_detalle']]);
+            } else {
+                qexec('INSERT INTO detalle_consumo(id_combustible,id_control,km_recorridos)VALUES(?,?,?)',[$id_comb,$id_ctrl,$km]);
+            }
         }
-        jout(['ok'=>true,'id_control'=>$id_ctrl,'id_combustible'=>$id_comb]);
+        jout(['ok'=>true,'id_control'=>$id_ctrl,'id_combustible'=>$id_comb,'accion'=>$accion]);
     }
 }
 
@@ -1249,6 +1306,96 @@ if($r0==='dashboard'){
             [$fd, $fh]
         ));
     }
+    // GET /api/dashboard/rendimiento-tanqueos — detalle por bloque de tanqueo para Power BI
+    // Lógica: km recorridos entre tanqueo[i-1] y tanqueo[i] = km_vehiculo[i] - km_vehiculo[i-1]
+    // Si un vehículo no tanqueó en el período, sus km quedan en el bloque del siguiente tanqueo
+    // Un bloque puede cruzar el período de filtro — se incluye si el tanqueo cae en el período
+    if($r1==='rendimiento-tanqueos'){
+        $fd=gget('fecha_desde',date('Y-m-01'));
+        $fh=gget('fecha_hasta',date('Y-m-d'));
+        $uid=gget('id_unidad');
+
+        // Todos los tanqueos de PETROLEO con su tanqueo anterior por vehículo
+        $sql="SELECT
+                c2.id_combustible,
+                c2.fecha           AS fecha_tanqueo,
+                c2.km_vehiculo     AS km_tanqueo,
+                c2.cantidad_gll    AS galones,
+                c2.precio_unitario AS precio_unitario,
+                c2.total           AS costo_soles,
+                c2.nro_comprobante,
+                c2.tipo_comprobante,
+                u.id_unidad,
+                u.placa,
+                u.tipo_unidad,
+                c1.km_vehiculo     AS km_tanqueo_anterior,
+                c1.fecha           AS fecha_tanqueo_anterior,
+                (c2.km_vehiculo - c1.km_vehiculo) AS km_recorridos_bloque,
+                ROUND(
+                    (c2.km_vehiculo - c1.km_vehiculo) / NULLIF(c2.cantidad_gll,0)
+                , 2) AS km_por_galon,
+                ROUND(c2.total / NULLIF(c2.km_vehiculo - c1.km_vehiculo, 0), 4) AS sol_por_km,
+                -- Viajes de detalle_consumo en este bloque
+                (SELECT COUNT(*) FROM detalle_consumo dc
+                 WHERE dc.id_combustible=c2.id_combustible) AS n_viajes_asignados,
+                (SELECT COALESCE(SUM(cf2.km_recorrido),0) FROM detalle_consumo dc2
+                 JOIN control_flota cf2 ON dc2.id_control=cf2.id_control
+                 WHERE dc2.id_combustible=c2.id_combustible) AS km_viajes_asignados
+              FROM compra_combustible c2
+              JOIN unidad u ON c2.id_unidad=u.id_unidad
+              -- Tanqueo anterior del mismo vehículo
+              JOIN compra_combustible c1
+                ON c1.id_unidad=c2.id_unidad
+               AND c1.km_vehiculo=(
+                   SELECT MAX(cx.km_vehiculo)
+                   FROM compra_combustible cx
+                   WHERE cx.id_unidad=c2.id_unidad
+                     AND cx.km_vehiculo < c2.km_vehiculo
+                     AND cx.tipo_combustible='PETROLEO'
+               )
+              WHERE c2.tipo_combustible='PETROLEO'
+                AND c2.id_unidad IS NOT NULL
+                AND c2.km_vehiculo IS NOT NULL
+                AND c2.fecha BETWEEN ? AND ?
+                AND (c2.km_vehiculo - c1.km_vehiculo) BETWEEN 1 AND 5000";
+        $p=[$fd,$fh];
+        if($uid){$sql.=' AND c2.id_unidad=?';$p[]=$uid;}
+        $sql.=' ORDER BY u.placa,c2.fecha ASC,c2.km_vehiculo ASC';
+        $bloques=qall($sql,$p);
+
+        // Resumen por unidad
+        $resumen=[];
+        foreach($bloques as $b){
+            $k=$b['id_unidad'];
+            if(!isset($resumen[$k])){
+                $resumen[$k]=[
+                    'id_unidad'=>$b['id_unidad'],'placa'=>$b['placa'],
+                    'tipo_unidad'=>$b['tipo_unidad'],'n_tanqueos'=>0,
+                    'km_totales'=>0,'gll_totales'=>0,'costo_total'=>0,
+                    'km_por_galon'=>0,'n_viajes'=>0,
+                ];
+            }
+            $resumen[$k]['n_tanqueos']++;
+            $resumen[$k]['km_totales']+=(float)$b['km_recorridos_bloque'];
+            $resumen[$k]['gll_totales']+=(float)$b['galones'];
+            $resumen[$k]['costo_total']+=(float)$b['costo_soles'];
+            $resumen[$k]['n_viajes']+=(int)$b['n_viajes_asignados'];
+        }
+        foreach($resumen as &$r){
+            $r['km_por_galon']=$r['gll_totales']>0?round($r['km_totales']/$r['gll_totales'],2):null;
+            $r['sol_por_km']=$r['km_totales']>0?round($r['costo_total']/$r['km_totales'],4):null;
+            $r['costo_total']=round($r['costo_total'],2);
+        }
+        usort($bloques,function($a,$b){ return strcmp($a['placa'],$b['placa']); });
+
+        jout([
+            'bloques'=>$bloques,
+            'resumen'=>array_values($resumen),
+            'periodo'=>['desde'=>$fd,'hasta'=>$fh],
+            'nota'=>'km_recorridos_bloque = km entre este tanqueo y el anterior. Si no hubo tanqueo intermedio, incluye todos los km de ese período.',
+        ]);
+    }
+
     // Rendimiento diario desde detalle_consumo: km/galón por día con viajes asociados
     if($r1==='rendimiento-diario'){
         $fd=gget('fecha_desde',date('Y-m-01'));$fh=gget('fecha_hasta',date('Y-m-d'));
