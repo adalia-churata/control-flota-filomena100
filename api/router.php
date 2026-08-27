@@ -206,35 +206,57 @@ if($r0==='garita'){
                AND cc.tipo_combustible = 'PETROLEO'
                AND cc.tanqueo          = 1
                AND cc.km_vehiculo      IS NOT NULL
-               -- Mostrar TODAS las compras cercanas al viaje sin filtro de margen
-               -- El usuario decide cuál asignar manualmente
-               -- Rango amplio: desde 100 km antes de la salida hasta 100 km después del retorno
-               AND cc.km_vehiculo BETWEEN (? - 100) AND (? + 100)
              ORDER BY cc.km_vehiculo DESC
-             LIMIT 50",
+             LIMIT 30",
             [
                 $km_s, $km_r, $km_r, $margen,  // relacion DURANTE cond
                 $km_s, $km_s,                    // relacion ANTERIOR cond
                 $km_s, $km_r,                    // km_antes_salida, dif_retorno
                 $id_u,                           // WHERE id_unidad
-                $km_s, ($km_r>0?$km_r:$km_s),  // BETWEEN rango
             ]
         );
 
-        // Marcar sugeridas y ya asignadas
+        // Clasificar cada compra según su relación con el viaje
         foreach($compras as &$cp){
-            $km_T = (float)$cp['km_vehiculo'];
+            $km_T    = (float)$cp['km_vehiculo'];
             $dif_ret = $km_r > 0 ? $km_r - $km_T : -1;
-            // Sugerida automática: cumple condiciones estrictas
-            $es_durante  = $km_T >= $km_s && $dif_ret <= $margen;
-            $es_anterior = $km_T < $km_s && $cp['relacion']==='ANTERIOR';
-            // En el rango del viaje (para emergencias a mitad de camino sin margen estricto)
-            $en_rango    = $km_T >= $km_s && ($km_r===0.0 || $km_T <= $km_r);
+
+            // SUGERIDA: tanqueo ocurrió justo en el viaje (condiciones estrictas)
+            //   km_T >= km_salida  Y  (km_retorno - km_T) <= 4 km
+            $es_durante = $km_T >= $km_s && $dif_ret <= $margen;
+
+            // ANTERIOR: tanqueo más reciente antes de la salida (viaje sin tanqueo propio)
+            $es_anterior = ($km_T < $km_s && $cp['relacion']==='ANTERIOR');
+
+            // EN RANGO: está dentro del trayecto pero fuera del margen (ej. emergencia)
+            $en_rango = $km_T >= $km_s && ($km_r===0.0 || $km_T <= $km_r) && !$es_durante;
+
+            // POSTERIOR: compra después del retorno (posible próximo tanqueo)
+            $es_posterior = $km_r > 0 && $km_T > $km_r;
+
             $cp['sugerido']    = ($es_durante || $es_anterior) ? 1 : 0;
-            $cp['en_rango']    = $en_rango ? 1 : 0; // cayó dentro del viaje aunque no cumpla margen
+            $cp['en_rango']    = $en_rango ? 1 : 0;
+            $cp['es_posterior']= $es_posterior ? 1 : 0;
             $cp['ya_asignado'] = in_array($cp['id_combustible'], $ya_asignados) ? 1 : 0;
+
+            // Sobrescribir la relacion con clasificación más clara
+            if ($es_durante)   $cp['relacion'] = 'DURANTE';
+            elseif ($es_anterior) $cp['relacion'] = 'ANTERIOR';
+            elseif ($en_rango) $cp['relacion'] = 'EN_RANGO';
+            elseif ($es_posterior) $cp['relacion'] = 'POSTERIOR';
+            else               $cp['relacion'] = 'OTRO';
         }
         unset($cp);
+
+        // Ordenar: sugeridas primero, luego en_rango, luego anteriores, luego posteriores
+        usort($compras, function($a,$b){
+            $order = ['DURANTE'=>0,'ANTERIOR'=>1,'EN_RANGO'=>2,'POSTERIOR'=>3,'OTRO'=>4];
+            $oa = $order[$a['relacion']]??4;
+            $ob = $order[$b['relacion']]??4;
+            if($oa !== $ob) return $oa - $ob;
+            // Dentro de cada grupo, ordenar por km_vehiculo DESC
+            return (float)$b['km_vehiculo'] <=> (float)$a['km_vehiculo'];
+        });
 
         jout($compras);
     }

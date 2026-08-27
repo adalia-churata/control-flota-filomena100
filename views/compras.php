@@ -895,10 +895,11 @@ async function seleccionarViaje(id) {
     var selC = document.getElementById('asign-comb-sel');
     selC.innerHTML = '<option value="">— Seleccionar compra —</option>';
     compras.forEach(function(cc) {
-      var prefix = cc.ya_asignado  ? '✓ YA ASIG · '
-                 : cc.sugerido     ? '⭐ SUGERIDA · '
-                 : cc.en_rango     ? '📍 EN RANGO · '
-                 : cc.relacion === 'ANTERIOR' ? '⬆ ANTERIOR · '
+      var prefix = cc.ya_asignado     ? '✓ YA ASIG · '
+                 : cc.relacion === 'DURANTE'   ? '⭐ SUGERIDA · '
+                 : cc.relacion === 'ANTERIOR'  ? '⬆ ANTERIOR · '
+                 : cc.relacion === 'EN_RANGO'  ? '📍 EN RANGO · '
+                 : cc.relacion === 'POSTERIOR' ? '⏭ POSTERIOR · '
                  : '◽ ';
       selC.insertAdjacentHTML('beforeend',
         '<option value="' + cc.id_combustible + '">' +
@@ -906,26 +907,32 @@ async function seleccionarViaje(id) {
         ' · km ' + (cc.km_vehiculo!=null?fmt.num(cc.km_vehiculo,1):'—') +
         ' · ' + fmt.num(cc.cantidad_gll,1) + ' gll' +
         ' · ' + fmt.sol(cc.total) +
-        (cc.ya_asignado ? ' (ya asignado)' : '') +
+        (cc.ya_asignado ? ' ✓' : '') +
         '</option>');
     });
 
-    var msg = document.getElementById('asign-sugerido-msg');
-    var enRango = compras.filter(function(cc){ return cc.en_rango==1 && !cc.sugerido; });
+    var msg        = document.getElementById('asign-sugerido-msg');
+    var sugeridas  = compras.filter(function(cc){ return cc.relacion==='DURANTE' || cc.relacion==='ANTERIOR'; });
+    var enRango    = compras.filter(function(cc){ return cc.relacion==='EN_RANGO'; });
+    var posteriores= compras.filter(function(cc){ return cc.relacion==='POSTERIOR'; });
+
     if (sugeridas.length > 0) {
       selC.value = sugeridas[0].id_combustible;
-      msg.style.color = 'var(--brand)';
-      msg.textContent = sugeridas.length === 1
-        ? '⭐ Sugerida: ' + fmtFecha(sugeridas[0].fecha) + ' · km ' +
-          fmt.num(sugeridas[0].km_vehiculo,1) + ' · ' + fmt.num(sugeridas[0].cantidad_gll,1) + ' gll'
-        : '⭐ ' + sugeridas.length + ' tanqueos sugeridos — asígnalos uno a uno con el botón Asignar';
+      msg.style.color = 'var(--ok)';
+      msg.innerHTML = sugeridas.length === 1
+        ? '⭐ <strong>Sugerida (' + sugeridas[0].relacion + '):</strong> km ' +
+          fmt.num(sugeridas[0].km_vehiculo,1) + ' · ' + fmt.num(sugeridas[0].cantidad_gll,1) + ' gll · ' + fmtFecha(sugeridas[0].fecha)
+        : '⭐ <strong>' + sugeridas.length + ' compras sugeridas</strong> — selecciona y asigna una a una';
     } else if (enRango.length > 0) {
       selC.value = enRango[0].id_combustible;
       msg.style.color = 'var(--warn)';
-      msg.textContent = '📍 ' + enRango.length + ' compra(s) dentro del rango de km del viaje — verifica y asigna manualmente';
-    } else {
+      msg.innerHTML = '📍 <strong>' + enRango.length + ' compra(s) dentro del trayecto</strong> (emergencia/parcial) — verifica y asigna';
+    } else if (posteriores.length > 0) {
       msg.style.color = 'var(--text3)';
-      msg.textContent = '⚠ Sin compra automática · Se muestran compras cercanas al km del viaje · Selecciona la correcta';
+      msg.innerHTML = '⚠ Sin tanqueo exacto · Se muestran las ' + compras.length + ' compras más recientes de este vehículo · Selecciona la más cercana';
+    } else {
+      msg.style.color = 'var(--danger)';
+      msg.innerHTML = '❌ Sin compras de combustible registradas para este vehículo';
     }
     msg.style.display = 'block';
   } catch(e) { console.error(e); }
