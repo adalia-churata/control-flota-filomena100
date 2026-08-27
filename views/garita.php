@@ -39,7 +39,7 @@ $horaAhora = date('H:i');
     <label>Actividad
       <select id="f-act" onchange="cargarViajes()">
         <option value="">Todas</option>
-        <option>ACOPIO</option><option>LOGISTICA</option><option>AGUA</option><option>MANTENIMIENTO</option><option>PAD</option><option>RELAVERA</option>
+        <option>ACOPIO</option><option>LOGISTICA</option><option>AGUA</option><option>MANTENIMIENTO</option>
       </select>
     </label>
     <button class="btn btn-outline btn-sm" onclick="exportarViajes()">Excel</button>
@@ -115,13 +115,16 @@ $horaAhora = date('H:i');
         <div style="font-weight:700" id="asign-v1">—</div>
         <div class="text-muted" id="asign-v2">—</div>
       </div>
-      <div style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;margin-bottom:8px">Compras disponibles</div>
-      <div id="asign-compras" style="display:flex;flex-direction:column;gap:8px">
-        <div class="empty-state" style="padding:10px;font-size:12px">Selecciona un viaje.</div>
+      <!-- Botones ARRIBA de la lista de compras -->
+      <div id="asign-btns" style="display:none;margin-bottom:10px">
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-primary" style="flex:1" onclick="ejecutarAsignacion()">✓ Asignar</button>
+          <button class="btn btn-outline" style="flex:1" onclick="desasignarViaje()">✕ Quitar</button>
+        </div>
       </div>
-      <div id="asign-btns" style="display:none;margin-top:14px">
-        <button class="btn btn-primary" style="width:100%" onclick="ejecutarAsignacion()">✓ Asignar esta compra</button>
-        <button class="btn btn-outline" style="width:100%;margin-top:6px" onclick="desasignarViaje()">Quitar asignación</button>
+      <div style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;margin-bottom:8px">Compras disponibles</div>
+      <div id="asign-compras" style="display:flex;flex-direction:column;gap:8px;max-height:420px;overflow-y:auto">
+        <div class="empty-state" style="padding:10px;font-size:12px">Selecciona un viaje.</div>
       </div>
     </div>
   </div>
@@ -172,7 +175,7 @@ $horaAhora = date('H:i');
           <select id="mv-act">
             <option value="">Seleccionar…</option>
             <option>ACOPIO</option><option>LOGISTICA</option><option>AGUA</option>
-            <option>MANTENIMIENTO</option><option>VENTA DE MINERAL</option><option>PAD</option><option>RELAVERA</option>
+            <option>MANTENIMIENTO</option><option>VENTA DE MINERAL</option><option>PAD</option>
           </select>
         </div>
         <div class="fgroup">
@@ -785,45 +788,93 @@ async function cargarComprasAsign(viaje) {
   lista.innerHTML = '<div class="text-sm text-muted" style="padding:8px">Cargando…</div>';
   document.getElementById('asign-btns').style.display = 'none';
   var url = '/api/garita/compras-para-asignar?id_unidad=' + viaje.id_unidad +
-            '&km_salida=' + (viaje.km_salida||0) + '&km_retorno=' + (viaje.km_retorno||0);
+            '&km_salida=' + (viaje.km_salida||0) + '&km_retorno=' + (viaje.km_retorno||0) +
+            '&id_control=' + viaje.id_control;
   var compras = await api(url);
   if (!compras.length) {
     lista.innerHTML = '<div class="empty-state" style="padding:10px;font-size:12px">Sin compras para esta unidad.</div>'; return;
   }
-  var sugerida = compras.find(function(c){ return c.sugerido==1; });
   var MARGEN = 4;
+
+  // Usar la clasificación del servidor si existe, si no recalcular localmente
+  var kmS   = parseFloat(viaje.km_salida||0);
+  var kmRet = parseFloat(viaje.km_retorno||0);
+
+  // Calcular relacion localmente para consistencia con el servidor
+  var kmAntMax = 0;
+  compras.filter(function(cc){ return (int=parseInt(cc.tanqueo),int===1) && parseFloat(cc.km_vehiculo||0) < kmS; })
+         .forEach(function(cc){ var k=parseFloat(cc.km_vehiculo||0); if(k>kmAntMax) kmAntMax=k; });
+
+  compras.forEach(function(cc){
+    var kmT   = parseFloat(cc.km_vehiculo||0);
+    var difR  = kmRet > 0 ? kmRet - kmT : -1;
+    var esTanq= parseInt(cc.tanqueo||1) === 1;
+    var dur   = esTanq && kmT >= kmS && difR <= MARGEN;
+    var ant   = esTanq && kmT < kmS && kmT === kmAntMax;
+    var emg   = !esTanq && kmT >= kmS && (kmRet===0 || kmT <= kmRet);
+    if (dur)       cc.relacion = 'DURANTE';
+    else if (ant)  cc.relacion = 'ANTERIOR';
+    else if (emg)  cc.relacion = 'EMERGENCIA';
+    else if (esTanq && kmT >= kmS && (kmRet===0||kmT<=kmRet)) cc.relacion = 'EN_RANGO';
+    else if (kmRet>0 && kmT > kmRet) cc.relacion = 'POSTERIOR';
+    else           cc.relacion = cc.relacion || 'OTRO';
+    cc.sugerido = (dur || ant) ? 1 : 0;
+  });
+
+  // Ordenar: DURANTE > ANTERIOR > EMERGENCIA > EN_RANGO > POSTERIOR > OTRO
+  var orden = {DURANTE:0,ANTERIOR:1,EMERGENCIA:2,EN_RANGO:3,POSTERIOR:4,OTRO:5};
+  compras.sort(function(a,b){
+    var oa = orden[a.relacion]||5, ob = orden[b.relacion]||5;
+    return oa!==ob ? oa-ob : parseFloat(b.km_vehiculo||0)-parseFloat(a.km_vehiculo||0);
+  });
+
+  var primera = compras[0];
+
   lista.innerHTML = compras.map(function(cc) {
+    var rel    = cc.relacion || 'OTRO';
     var esSug  = cc.sugerido==1;
-    var esAct  = viaje.comb_asignado == cc.id_combustible;
-    var bord   = esSug ? '2px solid var(--brand)' : esAct ? '2px solid var(--ok)' : '1px solid var(--border)';
-    var bg     = esSug ? 'var(--brand-lt)' : esAct ? 'var(--ok-lt)' : '#fff';
-    var kmS    = parseFloat(viaje.km_salida||0);
-    var kmRet  = parseFloat(viaje.km_retorno||0);
+    var esAct  = cc.ya_asignado==1;
+    var esEmg  = rel==='EMERGENCIA';
+    var bord   = esSug ? '2px solid var(--brand)' : esAct ? '2px solid var(--ok)' : esEmg ? '2px solid var(--warn)' : '1px solid var(--border)';
+    var bg     = esSug ? 'var(--brand-lt)' : esAct ? 'var(--ok-lt)' : esEmg ? 'var(--warn-lt)' : '#fff';
     var kmT    = parseFloat(cc.km_vehiculo||0);
-    var c1     = kmT > kmS;
-    var difR   = kmRet - kmT;
-    var c2     = kmRet === 0 || difR <= MARGEN;
-    var c2txt  = kmRet === 0 ? '(sin retorno aún)' : difR<=0 ? '(retornó antes del tanqueo)' : difR<=MARGEN ? '(≤'+MARGEN+' km ✓)' : '(>'+MARGEN+' km → siguiente tanqueo)';
+    var difR   = kmRet > 0 ? kmRet - kmT : -1;
+    var c1ok   = kmT >= kmS;
+    var c2ok   = kmRet===0 || difR<=MARGEN;
+    var c2txt  = kmRet===0 ? '(viaje en curso)' : difR<=0 ? '(retornó antes del tanqueo)' : difR<=MARGEN ? '(≤'+MARGEN+' km ✓)' : '(>'+MARGEN+' km)';
+    var icon   = rel==='DURANTE' ? '⭐' : rel==='ANTERIOR' ? '⬆' : rel==='EMERGENCIA' ? '🚨' : rel==='EN_RANGO' ? '📍' : rel==='POSTERIOR' ? '⏭' : '◽';
+    var badge  = rel==='DURANTE'   ? '<span class="badge badge-brand"  style="font-size:10px">SUGERIDA</span>'
+               : rel==='ANTERIOR'  ? '<span class="badge badge-info"   style="font-size:10px">ANTERIOR</span>'
+               : rel==='EMERGENCIA'? '<span class="badge badge-warn"   style="font-size:10px">EMERGENCIA</span>'
+               : rel==='EN_RANGO'  ? '<span class="badge badge-info"   style="font-size:10px">EN RANGO</span>'
+               : rel==='POSTERIOR' ? '<span class="badge"              style="font-size:10px">POSTERIOR</span>'
+               : '';
     return '<div onclick="acElegirCompra(' + cc.id_combustible + ',this)" data-id="' + cc.id_combustible + '"' +
            ' style="cursor:pointer;padding:10px 12px;border:' + bord + ';background:' + bg + ';border-radius:8px;transition:.15s">' +
-      '<div style="display:flex;justify-content:space-between">' +
-        '<div style="font-size:13px;font-weight:700">' + (esSug?'⭐ ':'') + fmtFecha(cc.fecha) +
-          (esSug ? '<span class="badge badge-brand" style="font-size:10px;margin-left:4px">SUGERIDO</span>' : '') +
-          (esAct ? '<span class="badge badge-ok"    style="font-size:10px;margin-left:4px">ACTUAL</span>'   : '') + '</div>' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start">' +
+        '<div style="font-size:13px;font-weight:700">' + icon + ' ' + fmtFecha(cc.fecha) + ' ' + badge +
+          (esAct ? ' <span class="badge badge-ok" style="font-size:10px">YA ASIG.</span>' : '') + '</div>' +
         '<span style="font-size:13px;font-weight:700;color:var(--brand)">' + fmt.sol(cc.total) + '</span>' +
       '</div>' +
-      '<div style="font-size:12px;color:var(--text2);margin-top:4px">km tanqueo: <strong>' + fmt.num(kmT,1) +
+      '<div style="font-size:12px;color:var(--text2);margin-top:4px">km: <strong>' + fmt.num(kmT,1) +
         '</strong> · ' + fmt.num(cc.cantidad_gll,1) + ' gll · ' + fmt.sol(cc.precio_unitario) + '/gll</div>' +
       '<div style="font-size:11px;color:var(--text3);margin-top:2px">' + (cc.nro_comprobante||'Sin comprobante') +
         ' · ' + cc.viajes_asignados + ' viaje' + (cc.viajes_asignados!=1?'s':'') + ' asignado' + (cc.viajes_asignados!=1?'s':'') + '</div>' +
-      '<div style="margin-top:6px;font-size:11px;display:flex;flex-direction:column;gap:2px">' +
-        '<div style="color:' + (c1?'var(--ok)':'var(--danger)') + '">' + (c1?'✓':'✗') + ' km salida (' + fmt.num(kmS,1) + ') &lt; km tanqueo (' + fmt.num(kmT,1) + ')</div>' +
-        (kmRet>0 ? '<div style="color:' + (c2?'var(--ok)':'var(--danger)') + '">' + (c2?'✓':'✗') + ' dif retorno-tanqueo = ' + (difR>0?'+':'') + fmt.num(difR,1) + ' km ' + c2txt + '</div>' : '<div style="color:var(--text3)">ℹ Viaje en curso</div>') +
-      '</div>' +
+      // Solo mostrar condiciones si es relevante (no para POSTERIOR ni OTRO)
+      (rel!=='POSTERIOR'&&rel!=='OTRO' ?
+        '<div style="margin-top:5px;font-size:11px;display:flex;flex-direction:column;gap:1px">' +
+          '<div style="color:' + (c1ok?'var(--ok)':'var(--danger)') + '">' + (c1ok?'✓':'✗') + ' km salida (' + fmt.num(kmS,1) + ') ≤ km tanqueo (' + fmt.num(kmT,1) + ')</div>' +
+          (kmRet>0 ? '<div style="color:' + (c2ok?'var(--ok)':'var(--danger)') + '">' + (c2ok?'✓':'✗') + ' dif = ' + (difR>0?'+':'') + fmt.num(difR,1) + ' km ' + c2txt + '</div>' : '') +
+        '</div>' : '') +
     '</div>';
   }).join('');
-  if (sugerida) {
-    compraSelec = sugerida.id_combustible;
+
+  // Guardar en cache para que ejecutarAsignacion pueda verificar la relacion
+  window._comprasCache = compras;
+
+  // Auto-seleccionar la primera sugerida o la primera de la lista
+  if (primera) {
+    compraSelec = primera.id_combustible;
     document.getElementById('asign-btns').style.display = 'block';
   }
 }
@@ -838,24 +889,66 @@ function acElegirCompra(id, el) {
 
 async function ejecutarAsignacion() {
   if (!viajeSelec || !compraSelec) { toast('Selecciona viaje y compra','error'); return; }
+
+  // Verificar que la compra seleccionada esté en rango válido del viaje
+  // Solo permitir doble/triple asignación si es DURANTE, ANTERIOR, EMERGENCIA o EN_RANGO
+  var compra = (window._comprasCache||[]).find(function(cc){ return cc.id_combustible==compraSelec; });
+  var rel = compra ? (compra.relacion||'OTRO') : 'OTRO';
+  var permitido = ['DURANTE','ANTERIOR','EMERGENCIA','EN_RANGO'].indexOf(rel) >= 0;
+
+  if (!permitido) {
+    if (!confirm(
+      'Esta compra es de tipo "' + rel + '" y está fuera del rango normal del viaje.
+' +
+      '¿Deseas asignarla de todas formas?'
+    )) return;
+  }
+
   try {
-    await api('/api/compras/asignar-viaje',{method:'POST',body:JSON.stringify({id_control:viajeSelec.id_control,id_combustible:compraSelec})});
-    toast('Asignado correctamente','ok');
+    await api('/api/compras/asignar-viaje', {method:'POST', body:JSON.stringify({
+      id_control:     viajeSelec.id_control,
+      id_combustible: compraSelec,
+      accion:         'agregar'  // agrega sin borrar otras compras ya asignadas
+    })});
+
+    toast('✓ Compra asignada al viaje', 'ok');
+
+    // Recargar compras del mismo viaje para ver cuáles quedan por asignar
+    // (no limpiar selección — permite asignar otra compra enseguida)
+    await cargarComprasAsign(viajeSelec);
     await cargarViajesAsign();
-    viajeSelec=null; compraSelec=null;
-    document.getElementById('asign-vinfo').style.display = 'none';
-    document.getElementById('asign-btns').style.display  = 'none';
-    document.getElementById('asign-compras').innerHTML   = '<div class="empty-state" style="padding:10px;font-size:12px">✓ Completado.</div>';
-    tx('asign-titulo','Selecciona otro viaje →');
+
   } catch(e){ toast('Error: '+e.message,'error'); }
 }
 
 async function desasignarViaje() {
   if (!viajeSelec) { toast('Selecciona un viaje','warn'); return; }
-  if (!confirm('¿Quitar la asignación?')) return;
+
+  // Si hay una compra seleccionada, quitar solo esa; si no, quitar toda la asignación
+  var compra = (window._comprasCache||[]).find(function(cc){ return cc.id_combustible==compraSelec; });
+  var msg = compraSelec
+    ? '¿Quitar solo esta compra del viaje? (las demás asignaciones se mantienen)'
+    : '¿Quitar TODA la asignación de combustible de este viaje?';
+  if (!confirm(msg)) return;
+
   try {
-    await api('/api/compras/asignar-viaje',{method:'POST',body:JSON.stringify({id_control:viajeSelec.id_control,id_combustible:null})});
-    toast('Asignación quitada','ok'); await cargarViajesAsign();
+    if (compraSelec) {
+      await api('/api/compras/asignar-viaje', {method:'POST', body:JSON.stringify({
+        id_control:     viajeSelec.id_control,
+        id_combustible: compraSelec,
+        accion:         'quitar'
+      })});
+      toast('Compra quitada del viaje','ok');
+    } else {
+      await api('/api/compras/asignar-viaje', {method:'POST', body:JSON.stringify({
+        id_control:     viajeSelec.id_control,
+        id_combustible: null,
+        accion:         'reemplazar'
+      })});
+      toast('Asignación quitada','ok');
+    }
+    await cargarComprasAsign(viajeSelec);
+    await cargarViajesAsign();
   } catch(e){ toast('Error: '+e.message,'error'); }
 }
 
