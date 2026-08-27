@@ -895,42 +895,42 @@ async function seleccionarViaje(id) {
     var selC = document.getElementById('asign-comb-sel');
     selC.innerHTML = '<option value="">— Seleccionar compra —</option>';
     compras.forEach(function(cc) {
-      var prefix = cc.ya_asignado ? '✓ YA ASIG · '
-                 : cc.sugerido   ? '⭐ SUGERIDA · ' : '';
+      var prefix = cc.ya_asignado  ? '✓ YA ASIG · '
+                 : cc.sugerido     ? '⭐ SUGERIDA · '
+                 : cc.en_rango     ? '📍 EN RANGO · '
+                 : cc.relacion === 'ANTERIOR' ? '⬆ ANTERIOR · '
+                 : '◽ ';
       selC.insertAdjacentHTML('beforeend',
         '<option value="' + cc.id_combustible + '">' +
-        prefix + fmtFecha(cc.fecha) + ' · km ' +
-        (cc.km_vehiculo!=null?fmt.num(cc.km_vehiculo,1):'—') +
-        ' · ' + fmt.num(cc.cantidad_gll,1) + ' gll · ' + fmt.sol(cc.total) +
+        prefix + fmtFecha(cc.fecha) +
+        ' · km ' + (cc.km_vehiculo!=null?fmt.num(cc.km_vehiculo,1):'—') +
+        ' · ' + fmt.num(cc.cantidad_gll,1) + ' gll' +
+        ' · ' + fmt.sol(cc.total) +
+        (cc.ya_asignado ? ' (ya asignado)' : '') +
         '</option>');
     });
 
     var msg = document.getElementById('asign-sugerido-msg');
+    var enRango = compras.filter(function(cc){ return cc.en_rango==1 && !cc.sugerido; });
     if (sugeridas.length > 0) {
       selC.value = sugeridas[0].id_combustible;
       msg.style.color = 'var(--brand)';
       msg.textContent = sugeridas.length === 1
-        ? '⭐ Compra sugerida: ' + fmtFecha(sugeridas[0].fecha) + ' · km ' +
+        ? '⭐ Sugerida: ' + fmtFecha(sugeridas[0].fecha) + ' · km ' +
           fmt.num(sugeridas[0].km_vehiculo,1) + ' · ' + fmt.num(sugeridas[0].cantidad_gll,1) + ' gll'
-        : '⭐ ' + sugeridas.length + ' tanqueos para este viaje — asígnalos uno a uno';
-      msg.style.display = 'block';
-    } else {
+        : '⭐ ' + sugeridas.length + ' tanqueos sugeridos — asígnalos uno a uno con el botón Asignar';
+    } else if (enRango.length > 0) {
+      selC.value = enRango[0].id_combustible;
       msg.style.color = 'var(--warn)';
-      msg.textContent = '⚠ Sin tanqueo automático — selecciona la compra manualmente';
-      msg.style.display = 'block';
+      msg.textContent = '📍 ' + enRango.length + ' compra(s) dentro del rango de km del viaje — verifica y asigna manualmente';
+    } else {
+      msg.style.color = 'var(--text3)';
+      msg.textContent = '⚠ Sin compra automática · Se muestran compras cercanas al km del viaje · Selecciona la correcta';
     }
+    msg.style.display = 'block';
   } catch(e) { console.error(e); }
 }
-  if (sugerida) {
-    document.getElementById('asign-comb-sel').value = sugerida.id_combustible;
-    document.getElementById('asign-sugerido-msg').textContent =
-      '⭐ Compra sugerida: '+fmtFecha(sugerida.fecha)+' · km '+fmt.num(sugerida.km_vehiculo,1)+
-      ' · '+fmt.num(sugerida.cantidad_gll,1)+' gll · '+fmt.sol(sugerida.total);
-    document.getElementById('asign-sugerido-msg').style.display = 'block';
-  } else {
-    document.getElementById('asign-sugerido-msg').style.display = 'none';
-  }
-}
+
 
 function mostrarDetalleViaje() {
   const id = document.getElementById('asign-viaje-sel').value;
@@ -987,12 +987,34 @@ async function asignarViajeManual() {
 }
 
 async function desasignarViaje() {
-  const id_ctrl = document.getElementById('asign-viaje-sel').value;
+  var id_ctrl = document.getElementById('asign-viaje-sel').value;
+  var id_comb = document.getElementById('asign-comb-sel').value;
   if (!id_ctrl) { toast('Selecciona un viaje','warn'); return; }
-  if (!confirm('¿Quitar la asignación de combustible?')) return;
+
+  var msg = id_comb
+    ? '¿Quitar solo esta compra (' + id_comb + ') del viaje?'
+    : '¿Quitar TODA la asignación de combustible de este viaje?';
+  if (!confirm(msg)) return;
+
   try {
-    await api('/api/compras/asignar-viaje',{method:'POST',body:JSON.stringify({id_control:+id_ctrl,id_combustible:null})});
-    toast('Asignación quitada','ok');
+    if (id_comb) {
+      // Quitar solo el combustible seleccionado
+      await api('/api/compras/asignar-viaje', {method:'POST', body:JSON.stringify({
+        id_control:    +id_ctrl,
+        id_combustible:+id_comb,
+        accion:        'quitar'
+      })});
+      toast('Compra quitada del viaje','ok');
+    } else {
+      // Quitar toda la asignación → dejar fila NULL
+      await api('/api/compras/asignar-viaje', {method:'POST', body:JSON.stringify({
+        id_control:    +id_ctrl,
+        id_combustible:null,
+        accion:        'reemplazar'
+      })});
+      toast('Asignación quitada','ok');
+    }
+    await seleccionarViaje(id_ctrl);
     cargarViajesPendientes();
   } catch(e) { toast('Error: '+e.message,'error'); }
 }
