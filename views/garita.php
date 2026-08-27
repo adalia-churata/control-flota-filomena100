@@ -802,7 +802,7 @@ async function cargarComprasAsign(viaje) {
 
   // Calcular relacion localmente para consistencia con el servidor
   var kmAntMax = 0;
-  compras.filter(function(cc){ return (int=parseInt(cc.tanqueo),int===1) && parseFloat(cc.km_vehiculo||0) < kmS; })
+  compras.filter(function(cc){ return parseInt(cc.tanqueo||1)===1 && parseFloat(cc.km_vehiculo||0) < kmS; })
          .forEach(function(cc){ var k=parseFloat(cc.km_vehiculo||0); if(k>kmAntMax) kmAntMax=k; });
 
   compras.forEach(function(cc){
@@ -898,8 +898,7 @@ async function ejecutarAsignacion() {
 
   if (!permitido) {
     if (!confirm(
-      'Esta compra es de tipo "' + rel + '" y está fuera del rango normal del viaje.
-' +
+      'Esta compra es de tipo "' + rel + '" y está fuera del rango normal del viaje.\n' +
       '¿Deseas asignarla de todas formas?'
     )) return;
   }
@@ -927,8 +926,8 @@ async function desasignarViaje() {
   // Si hay una compra seleccionada, quitar solo esa; si no, quitar toda la asignación
   var compra = (window._comprasCache||[]).find(function(cc){ return cc.id_combustible==compraSelec; });
   var msg = compraSelec
-    ? '¿Quitar solo esta compra del viaje? (las demás asignaciones se mantienen)'
-    : '¿Quitar TODA la asignación de combustible de este viaje?';
+    ? '¿Quitar solo esta compra del viaje? Las demás asignaciones se mantienen.'
+    : '¿Quitar TODA la asignacion de combustible de este viaje?';
   if (!confirm(msg)) return;
 
   try {
