@@ -895,11 +895,12 @@ async function seleccionarViaje(id) {
     var selC = document.getElementById('asign-comb-sel');
     selC.innerHTML = '<option value="">— Seleccionar compra —</option>';
     compras.forEach(function(cc) {
-      var prefix = cc.ya_asignado     ? '✓ YA ASIG · '
-                 : cc.relacion === 'DURANTE'   ? '⭐ SUGERIDA · '
-                 : cc.relacion === 'ANTERIOR'  ? '⬆ ANTERIOR · '
-                 : cc.relacion === 'EN_RANGO'  ? '📍 EN RANGO · '
-                 : cc.relacion === 'POSTERIOR' ? '⏭ POSTERIOR · '
+      var prefix = cc.ya_asignado          ? '✓ YA ASIG · '
+                 : cc.relacion === 'DURANTE'    ? '⭐ SUGERIDA · '
+                 : cc.relacion === 'ANTERIOR'   ? '⬆ ANTERIOR · '
+                 : cc.relacion === 'EMERGENCIA' ? '🚨 EMERGENCIA · '
+                 : cc.relacion === 'EN_RANGO'   ? '📍 EN RANGO · '
+                 : cc.relacion === 'POSTERIOR'  ? '⏭ POSTERIOR · '
                  : '◽ ';
       selC.insertAdjacentHTML('beforeend',
         '<option value="' + cc.id_combustible + '">' +
@@ -912,8 +913,9 @@ async function seleccionarViaje(id) {
     });
 
     var msg        = document.getElementById('asign-sugerido-msg');
-    var sugeridas  = compras.filter(function(cc){ return cc.relacion==='DURANTE' || cc.relacion==='ANTERIOR'; });
-    var enRango    = compras.filter(function(cc){ return cc.relacion==='EN_RANGO'; });
+    var sugeridas   = compras.filter(function(cc){ return cc.relacion==='DURANTE' || cc.relacion==='ANTERIOR'; });
+    var emergencias = compras.filter(function(cc){ return cc.relacion==='EMERGENCIA'; });
+    var enRango     = compras.filter(function(cc){ return cc.relacion==='EN_RANGO'; });
     var posteriores= compras.filter(function(cc){ return cc.relacion==='POSTERIOR'; });
 
     if (sugeridas.length > 0) {
@@ -923,10 +925,14 @@ async function seleccionarViaje(id) {
         ? '⭐ <strong>Sugerida (' + sugeridas[0].relacion + '):</strong> km ' +
           fmt.num(sugeridas[0].km_vehiculo,1) + ' · ' + fmt.num(sugeridas[0].cantidad_gll,1) + ' gll · ' + fmtFecha(sugeridas[0].fecha)
         : '⭐ <strong>' + sugeridas.length + ' compras sugeridas</strong> — selecciona y asigna una a una';
+    } else if (emergencias.length > 0) {
+      selC.value = emergencias[0].id_combustible;
+      msg.style.color = 'var(--warn)';
+      msg.innerHTML = '🚨 <strong>' + emergencias.length + ' compra(s) de emergencia</strong> (tanqueo parcial dentro del viaje) — asigna manualmente';
     } else if (enRango.length > 0) {
       selC.value = enRango[0].id_combustible;
       msg.style.color = 'var(--warn)';
-      msg.innerHTML = '📍 <strong>' + enRango.length + ' compra(s) dentro del trayecto</strong> (emergencia/parcial) — verifica y asigna';
+      msg.innerHTML = '📍 <strong>' + enRango.length + ' compra(s) dentro del trayecto</strong> — verifica y asigna';
     } else if (posteriores.length > 0) {
       msg.style.color = 'var(--text3)';
       msg.innerHTML = '⚠ Sin tanqueo exacto · Se muestran las ' + compras.length + ' compras más recientes de este vehículo · Selecciona la más cercana';
@@ -1043,26 +1049,39 @@ async function desasignarViaje() {
   </div>
 
   <div id="panel-asign-selects" style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px">
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
-      <div class="fgroup" style="flex:2;min-width:240px;margin:0">
+    <!-- Fila superior: viaje + compra + botones — todo visible sin scroll -->
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px">
+      <div class="fgroup" style="flex:2;min-width:200px;margin:0">
         <label>Viaje seleccionado</label>
         <select id="asign-viaje-sel" onchange="mostrarDetalleViaje()">
-          <option value="">— Haz clic en "Seleccionar" en la tabla de abajo —</option>
+          <option value="">— Selecciona en la tabla de abajo —</option>
         </select>
       </div>
-      <div class="fgroup" style="flex:2;min-width:240px;margin:0">
-        <label>Compra de combustible</label>
+      <div class="fgroup" style="flex:2;min-width:200px;margin:0">
+        <label>Compra a asignar</label>
         <select id="asign-comb-sel">
-          <option value="">— Seleccionar compra —</option>
+          <option value="">— Cargando… —</option>
         </select>
       </div>
-      <div style="display:flex;flex-direction:column;gap:6px">
-        <button class="btn btn-primary" onclick="asignarViajeManual()">✓ Asignar</button>
-        <button class="btn btn-outline btn-sm" style="border-color:var(--brand);color:var(--brand)" onclick="reasignarVacios()" title="Asigna automáticamente compras a viajes sin combustible">🔄 Auto-asignar vacíos</button>
-        <button class="btn btn-outline btn-sm" onclick="desasignarViaje()">Quitar</button>
+      <!-- Botones pegados al selector -->
+      <div style="display:flex;gap:6px;align-items:center;padding-bottom:1px">
+        <button class="btn btn-primary" onclick="asignarViajeManual()"
+                style="height:38px;font-size:14px;padding:0 18px;white-space:nowrap">
+          ✓ Asignar
+        </button>
+        <button class="btn btn-outline btn-sm" onclick="desasignarViaje()"
+                style="height:38px;white-space:nowrap" title="Quitar la compra seleccionada del viaje">
+          ✕ Quitar
+        </button>
+        <button class="btn btn-outline btn-sm" onclick="reasignarVacios()"
+                style="height:38px;border-color:var(--brand);color:var(--brand);white-space:nowrap"
+                title="Asigna automáticamente a todos los viajes sin combustible">
+          🔄 Auto
+        </button>
       </div>
     </div>
-    <div id="asign-sugerido-msg" style="display:none;font-size:12px;color:var(--brand);background:#fff;border:1px solid var(--brand);border-radius:6px;padding:6px 10px;margin-bottom:6px"></div>
+    <!-- Mensaje sugerido y detalle del viaje -->
+    <div id="asign-sugerido-msg" style="display:none;font-size:12px;border-radius:6px;padding:6px 10px;margin-bottom:4px"></div>
     <div id="asign-viaje-detalle" style="font-size:12px;color:var(--text2)"></div>
   </div>
 

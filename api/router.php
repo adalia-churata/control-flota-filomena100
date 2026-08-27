@@ -175,74 +175,64 @@ if($r0==='garita'){
             $ya_asignados = array_column($rows,'id_combustible');
         }
 
+        // Tanqueo anterior más reciente (para saber cuál es el ANTERIOR real)
+        $km_anterior_max = (float)(qval(
+            "SELECT MAX(km_vehiculo) FROM compra_combustible
+             WHERE id_unidad=? AND tipo_combustible='PETROLEO' AND tanqueo=1
+               AND km_vehiculo IS NOT NULL AND km_vehiculo < ?",
+            [$id_u, $km_s]
+        ) ?? 0);
+
+        // Todos los tanqueos y emergencias del vehículo (últimos 30)
         $compras = qall(
             "SELECT cc.id_combustible, cc.fecha, cc.nro_comprobante, cc.tipo_comprobante,
                     cc.cantidad_gll, cc.km_vehiculo, cc.precio_unitario, cc.total, cc.tanqueo,
                     (SELECT COUNT(*) FROM detalle_consumo dc2
                      WHERE dc2.id_combustible=cc.id_combustible) AS viajes_asignados,
-
-                    -- Tipo de relación con el viaje:
-                    -- DURANTE: tanqueo ocurrió entre salida y retorno (km_sal <= km_T <= km_ret)
-                    -- ANTERIOR: tanqueo más reciente ANTES de la salida (viaje sin tanqueo)
-                    -- OTRO: no aplica directamente
-
-                    CASE
-                      WHEN cc.km_vehiculo >= ? AND (? = 0 OR (? - cc.km_vehiculo) <= ?)
-                        THEN 'DURANTE'
-                      WHEN cc.km_vehiculo < ? AND cc.km_vehiculo = (
-                          SELECT MAX(cx.km_vehiculo)
-                          FROM compra_combustible cx
-                          WHERE cx.id_unidad=cc.id_unidad AND cx.tipo_combustible='PETROLEO'
-                            AND cx.tanqueo=1 AND cx.km_vehiculo < ?
-                      ) THEN 'ANTERIOR'
-                      ELSE 'OTRO'
-                    END AS relacion,
-
                     (cc.km_vehiculo - ?) AS km_antes_salida,
                     (? - cc.km_vehiculo) AS dif_retorno
-
              FROM compra_combustible cc
              WHERE cc.id_unidad        = ?
                AND cc.tipo_combustible = 'PETROLEO'
-               AND cc.tanqueo          = 1
                AND cc.km_vehiculo      IS NOT NULL
              ORDER BY cc.km_vehiculo DESC
              LIMIT 30",
-            [
-                $km_s, $km_r, $km_r, $margen,  // relacion DURANTE cond
-                $km_s, $km_s,                    // relacion ANTERIOR cond
-                $km_s, $km_r,                    // km_antes_salida, dif_retorno
-                $id_u,                           // WHERE id_unidad
-            ]
+            [$km_s, $km_r, $id_u]
         );
 
-        // Clasificar cada compra según su relación con el viaje
+        // Clasificar cada compra con lógica correcta
         foreach($compras as &$cp){
             $km_T    = (float)$cp['km_vehiculo'];
             $dif_ret = $km_r > 0 ? $km_r - $km_T : -1;
+            $es_tanqueo = (int)($cp['tanqueo']??1) === 1;
 
-            // SUGERIDA: tanqueo ocurrió justo en el viaje (condiciones estrictas)
-            //   km_T >= km_salida  Y  (km_retorno - km_T) <= 4 km
-            $es_durante = $km_T >= $km_s && $dif_ret <= $margen;
+            // DURANTE: km_T >= km_salida Y dif_retorno <= margen (condición estricta)
+            // Solo aplica a tanqueos completos (tanqueo=1)
+            $es_durante = $es_tanqueo && $km_T >= $km_s && $dif_ret <= $margen;
 
-            // ANTERIOR: tanqueo más reciente antes de la salida (viaje sin tanqueo propio)
-            $es_anterior = ($km_T < $km_s && $cp['relacion']==='ANTERIOR');
+            // ANTERIOR: es el tanqueo completo más reciente ANTES de la salida
+            // Solo UNO puede ser ANTERIOR (el de mayor km < km_salida)
+            $es_anterior = $es_tanqueo && $km_T < $km_s && $km_T === $km_anterior_max;
 
-            // EN RANGO: está dentro del trayecto pero fuera del margen (ej. emergencia)
-            $en_rango = $km_T >= $km_s && ($km_r===0.0 || $km_T <= $km_r) && !$es_durante;
+            // EMERGENCIA: compra con tanqueo=0 dentro del trayecto
+            $es_emergencia = !$es_tanqueo && $km_T >= $km_s && ($km_r===0.0 || $km_T <= $km_r);
 
-            // POSTERIOR: compra después del retorno (posible próximo tanqueo)
+            // EN RANGO: tanqueo dentro del trayecto pero fuera del margen estricto
+            $en_rango = $es_tanqueo && $km_T >= $km_s && ($km_r===0.0 || $km_T <= $km_r) && !$es_durante;
+
+            // POSTERIOR: después del retorno
             $es_posterior = $km_r > 0 && $km_T > $km_r;
 
+            // Solo DURANTE y ANTERIOR son sugeridos automáticamente
             $cp['sugerido']    = ($es_durante || $es_anterior) ? 1 : 0;
-            $cp['en_rango']    = $en_rango ? 1 : 0;
+            $cp['en_rango']    = ($en_rango || $es_emergencia) ? 1 : 0;
             $cp['es_posterior']= $es_posterior ? 1 : 0;
             $cp['ya_asignado'] = in_array($cp['id_combustible'], $ya_asignados) ? 1 : 0;
 
-            // Sobrescribir la relacion con clasificación más clara
-            if ($es_durante)   $cp['relacion'] = 'DURANTE';
-            elseif ($es_anterior) $cp['relacion'] = 'ANTERIOR';
-            elseif ($en_rango) $cp['relacion'] = 'EN_RANGO';
+            if ($es_durante)        $cp['relacion'] = 'DURANTE';
+            elseif ($es_anterior)   $cp['relacion'] = 'ANTERIOR';
+            elseif ($es_emergencia) $cp['relacion'] = 'EMERGENCIA';
+            elseif ($en_rango)      $cp['relacion'] = 'EN_RANGO';
             elseif ($es_posterior) $cp['relacion'] = 'POSTERIOR';
             else               $cp['relacion'] = 'OTRO';
         }
