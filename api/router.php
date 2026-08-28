@@ -1890,27 +1890,50 @@ function run_assignment(int $id_combustible): array {
                 $updated++;
             }
         } else {
-            // Emergencia (tanqueo=0): INSERT adicional en el viaje cuyo bloque contiene este km
-            $viaje_emg = qone(
+            // Emergencia (tanqueo=0): asignar a TODOS los viajes del mismo bloque
+            // Bloque = [T1, T2] donde T2 es el siguiente tanqueo completo después de km_E
+            // Así Power BI puede sumar galones correctamente por bloque
+
+            // Encontrar T2: próximo tanqueo completo >= km_E
+            $t2_emg = qone(
+                "SELECT km_vehiculo AS km_T2 FROM compra_combustible
+                 WHERE id_unidad=? AND tipo_combustible='PETROLEO' AND tanqueo=1
+                   AND km_vehiculo IS NOT NULL AND km_vehiculo >= ?
+                 ORDER BY km_vehiculo ASC LIMIT 1",
+                [$c['id_unidad'], $km_T]
+            );
+            // Encontrar T1: tanqueo completo anterior a T2
+            $km_T2_emg = $t2_emg ? (float)$t2_emg['km_T2'] : 999999999;
+            $t1_emg = qone(
+                "SELECT km_vehiculo AS km_T1 FROM compra_combustible
+                 WHERE id_unidad=? AND tipo_combustible='PETROLEO' AND tanqueo=1
+                   AND km_vehiculo IS NOT NULL AND km_vehiculo < ?
+                 ORDER BY km_vehiculo DESC LIMIT 1",
+                [$c['id_unidad'], $km_T2_emg]
+            );
+            $km_T1_emg = $t1_emg ? (float)$t1_emg['km_T1'] : 0;
+
+            // Todos los viajes del bloque [T1, T2]
+            $viajes_bloque_emg = qall(
                 "SELECT cf.id_control, cf.km_recorrido
                  FROM control_flota cf
                  WHERE cf.id_unidad  = ?
                    AND cf.km_salida  IS NOT NULL
                    AND cf.km_retorno IS NOT NULL AND cf.km_retorno > 0
-                   AND cf.km_salida  <= ?
-                   AND cf.km_retorno >= ?
-                 ORDER BY cf.km_salida DESC LIMIT 1",
-                [$c['id_unidad'], $km_T, $km_T]
+                   AND cf.km_salida  > ?
+                   AND cf.km_retorno <= ? + ?",
+                [$c['id_unidad'], $km_T1_emg, $km_T2_emg, $margen]
             );
-            if($viaje_emg){
-                $id_ctrl = (int)$viaje_emg['id_control'];
+
+            foreach($viajes_bloque_emg as $v){
+                $id_ctrl = (int)$v['id_control'];
                 $ex = (int)(qval(
                     'SELECT COUNT(*) FROM detalle_consumo WHERE id_control=? AND id_combustible=?',
                     [$id_ctrl, $id_combustible]
                 ) ?? 0);
                 if(!$ex){
                     qexec('INSERT INTO detalle_consumo(id_combustible,id_control,km_recorridos)VALUES(?,?,?)',
-                        [$id_combustible, $id_ctrl, $viaje_emg['km_recorrido']]);
+                        [$id_combustible, $id_ctrl, $v['km_recorrido']]);
                     $updated++;
                 }
             }
@@ -1979,16 +2002,38 @@ function run_assignment_viaje(int $id_ctrl, int $id_u, float $km_sal, float $km_
             }
         }
 
-        // Agregar emergencias dentro del trayecto del viaje
-        $emergencias = qall(
-            "SELECT id_combustible, km_vehiculo, 0 AS tanqueo, 'EMERGENCIA' AS relacion
-             FROM compra_combustible
-             WHERE id_unidad=? AND tipo_combustible='PETROLEO' AND tanqueo=0
-               AND km_vehiculo IS NOT NULL
-               AND km_vehiculo >= ? AND km_vehiculo <= ?
-             ORDER BY km_vehiculo ASC",
-            [$id_u, $km_sal, $km_ret]
-        );
+        // Agregar emergencias del mismo bloque [T1, T2]
+        // Una emergencia pertenece al bloque aunque no esté en el trayecto exacto del viaje
+        // porque sus galones se consumieron en algún viaje de ese bloque
+        if(!empty($candidatas)){
+            $t2_bloque = (float)($candidatas[0]['km_vehiculo'] ?? 0);
+            $t1_bloque = (float)(qval(
+                "SELECT MAX(km_vehiculo) FROM compra_combustible
+                 WHERE id_unidad=? AND tipo_combustible='PETROLEO' AND tanqueo=1
+                   AND km_vehiculo IS NOT NULL AND km_vehiculo < ?",
+                [$id_u, $t2_bloque]
+            ) ?? 0);
+            $emergencias = qall(
+                "SELECT id_combustible, km_vehiculo, 0 AS tanqueo, 'EMERGENCIA' AS relacion
+                 FROM compra_combustible
+                 WHERE id_unidad=? AND tipo_combustible='PETROLEO' AND tanqueo=0
+                   AND km_vehiculo IS NOT NULL
+                   AND km_vehiculo > ? AND km_vehiculo <= ?
+                 ORDER BY km_vehiculo ASC",
+                [$id_u, $t1_bloque, $t2_bloque]
+            );
+        } else {
+            // Sin tanqueo propio: emergencias dentro del trayecto
+            $emergencias = qall(
+                "SELECT id_combustible, km_vehiculo, 0 AS tanqueo, 'EMERGENCIA' AS relacion
+                 FROM compra_combustible
+                 WHERE id_unidad=? AND tipo_combustible='PETROLEO' AND tanqueo=0
+                   AND km_vehiculo IS NOT NULL
+                   AND km_vehiculo >= ? AND km_vehiculo <= ?
+                 ORDER BY km_vehiculo ASC",
+                [$id_u, $km_sal, $km_ret]
+            );
+        }
         $candidatas = array_merge($candidatas, $emergencias);
 
     } else {
