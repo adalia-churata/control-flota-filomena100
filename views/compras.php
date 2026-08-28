@@ -347,6 +347,46 @@
   </div>
 </div>
 
+
+<!-- ══ Diagnóstico de asignaciones ═══════════════════════════ -->
+<div class="card full" style="margin-top:var(--gap)" id="section-diagnostico">
+  <div class="card-title">
+    🔍 Diagnóstico de asignaciones
+    <span class="text-muted text-sm">Verifica y corrige relaciones viaje ↔ combustible</span>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
+    <label>Desde <input type="date" id="diag-desde" value="<?= date('Y-m-01') ?>"/></label>
+    <label>Hasta <input type="date" id="diag-hasta" value="<?= date('Y-m-d') ?>"/></label>
+    <label>Unidad
+      <select id="diag-unidad">
+        <option value="">Todas FLOTA</option>
+      </select>
+    </label>
+    <button class="btn btn-primary btn-sm" onclick="cargarDiagnostico()">🔍 Analizar</button>
+    <button class="btn btn-sm" style="background:var(--brand);color:#fff" onclick="recalcularAsignaciones()"
+            title="Corrige automáticamente las asignaciones incorrectas usando la lógica de km">
+      ⚡ Corregir erróneos
+    </button>
+    <button class="btn btn-outline btn-sm" onclick="limpiarNulos()" title="Elimina filas vacías (id_combustible NULL)">🗑 Quitar vacíos</button>
+  </div>
+  <div class="kpi-grid" style="margin-bottom:var(--gap)" id="diag-kpis"></div>
+  <div class="tbl-wrap">
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>Viaje</th><th>Fecha</th><th>Unidad</th>
+          <th>km salida</th><th>km retorno</th>
+          <th>Compra / Comprobante</th><th>km tanqueo</th><th>Gll</th>
+          <th>Relación</th><th>Detalle</th><th>Acción</th>
+        </tr>
+      </thead>
+      <tbody id="diag-tbody">
+        <tr><td colspan="11" class="empty">Haz clic en "Analizar" para ver las asignaciones.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
 <script>
 /* ══════════════════════════════════════════════════════════
    COMPRAS — JavaScript
@@ -958,6 +998,107 @@ function mostrarDetalleViaje() {
     (v.observacion?' · '+v.observacion:'');
 }
 
+// ── Diagnóstico de asignaciones ──────────────────────────────
+async function cargarDiagnostico() {
+  var desde  = document.getElementById('diag-desde').value;
+  var hasta  = document.getElementById('diag-hasta').value;
+  var uid    = document.getElementById('diag-unidad').value;
+  var tbody  = document.getElementById('diag-tbody');
+  tbody.innerHTML = '<tr><td colspan="11" class="empty">Cargando…</td></tr>';
+
+  // Cargar detalle_consumo con info de viaje y compra
+  var url = '/api/compras/diagnostico?fecha_desde=' + desde + '&fecha_hasta=' + hasta;
+  if (uid) url += '&id_unidad=' + uid;
+
+  var rows = await api(url);
+  tx('diag-count', rows.length + ' relaciones');
+
+  // KPIs
+  var sinAsig   = rows.filter(function(r){ return !r.id_combustible; }).length;
+  var malAsig   = rows.filter(function(r){ return r.id_combustible && r.estado_rel==='MAL'; }).length;
+  var okAsig    = rows.filter(function(r){ return r.id_combustible && r.estado_rel!=='MAL'; }).length;
+  document.getElementById('diag-kpis').innerHTML =
+    '<div class="kpi-card"><div class="kpi-lbl">Sin asignar</div><div class="kpi-val warn">' + sinAsig + '</div></div>' +
+    '<div class="kpi-card"><div class="kpi-lbl">Posible error</div><div class="kpi-val" style="color:var(--danger)">' + malAsig + '</div></div>' +
+    '<div class="kpi-card"><div class="kpi-lbl">Correctos</div><div class="kpi-val ok">' + okAsig + '</div></div>' +
+    '<div class="kpi-card"><div class="kpi-lbl">Total relaciones</div><div class="kpi-val brand">' + rows.length + '</div></div>';
+
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="11" class="empty">Sin registros.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = rows.map(function(r) {
+    var sinComb = !r.id_combustible;
+    var esMal   = r.id_combustible && r.estado_rel === 'MAL';
+    var rowBg   = sinComb ? 'background:var(--warn-lt)' : esMal ? 'background:var(--danger-lt)' : '';
+    var badge   = sinComb
+      ? '<span class="badge badge-warn">Sin asignar</span>'
+      : esMal
+        ? '<span class="badge badge-danger" title="' + (r.motivo_mal||'') + '">⚠ ' + (r.relacion_km||'?') + '</span>'
+        : '<span class="badge badge-ok">' + (r.relacion_km||'OK') + '</span>';
+
+    return '<tr style="' + rowBg + '">' +
+      '<td class="mono">#' + r.id_control + '</td>' +
+      '<td>' + fmtFecha(r.fecha_viaje) + '</td>' +
+      '<td><strong>' + (r.placa||'—') + '</strong></td>' +
+      '<td class="mono">' + (r.km_salida!=null?fmt.num(r.km_salida,0):'—') + '</td>' +
+      '<td class="mono">' + (r.km_retorno!=null?fmt.num(r.km_retorno,0):'—') + '</td>' +
+      '<td class="mono text-sm">' + (r.nro_comprobante||'<span class="text-muted">—</span>') + '</td>' +
+      '<td class="mono">' + (r.km_tanqueo!=null?fmt.num(r.km_tanqueo,0):'—') + '</td>' +
+      '<td class="mono">' + (r.cantidad_gll!=null?fmt.num(r.cantidad_gll,1):'—') + '</td>' +
+      '<td>' + badge + '</td>' +
+      '<td class="text-sm" style="color:var(--text3)">' + (r.motivo_mal||'') + '</td>' +
+      '<td>' +
+        '<button class="btn btn-xs btn-outline" onclick="reasignarFila(' + r.id_control + ',' + r.id_detalle + ')"' +
+          ' title="Quitar esta asignación y dejar el viaje sin asignar para corregirlo">🔄</button>' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+async function reasignarFila(id_ctrl, id_detalle) {
+  if (!confirm('¿Quitar esta asignación? El viaje quedará sin combustible para que puedas reasignarlo correctamente.')) return;
+  try {
+    // Eliminar el detalle específico y dejar fila NULL
+    await api('/api/compras/asignar-viaje', {method:'POST', body:JSON.stringify({
+      id_control: id_ctrl, id_combustible: null, accion: 'reemplazar'
+    })});
+    toast('Asignación quitada — reasigna desde Garita o el panel de asignación','ok');
+    cargarDiagnostico();
+  } catch(e){ toast('Error: '+e.message,'error'); }
+}
+
+async function recalcularAsignaciones() {
+  if (!confirm(
+    'Esto revisará TODAS las asignaciones existentes y corregirá las que no\n' +
+    'cumplen la lógica de km (km_salida <= km_tanqueo <= km_retorno + 4).\n\n' +
+    'Las correctas no se tocan. Las incorrectas se actualizan a la compra correcta.\n\n' +
+    '¿Continuar?'
+  )) return;
+  try {
+    toast('Analizando y corrigiendo asignaciones...', 'warn');
+    var r = await api('/api/compras/recalcular-asignaciones', {method:'POST', body:JSON.stringify({solo_erroneos:true})});
+    toast(
+      '✓ ' + r.corregidos + ' corregidas · ' +
+      r.correctos + ' correctas · ' +
+      r.sin_match + ' sin compra válida (quedaron vacías) · ' +
+      r.total + ' revisadas',
+      'ok'
+    );
+    cargarDiagnostico();
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function limpiarNulos() {
+  if (!confirm('¿Eliminar todas las filas de detalle_consumo donde id_combustible es NULL? (viajes sin asignar seguirán apareciendo en la lista)')) return;
+  try {
+    var r = await api('/api/compras/limpiar-nulos', {method:'POST'});
+    toast('Eliminadas ' + r.eliminadas + ' filas vacías','ok');
+    cargarDiagnostico();
+  } catch(e){ toast('Error: '+e.message,'error'); }
+}
+
 async function reasignarVacios() {
   if (!confirm(
     'Buscará viajes SIN combustible asignado y les asignará la compra correcta\n' +
@@ -1031,6 +1172,124 @@ async function desasignarViaje() {
     cargarViajesPendientes();
   } catch(e) { toast('Error: '+e.message,'error'); }
 }
+
+
+// ── Diagnóstico de asignaciones ──────────────────────────────
+async function cargarDiagnostico() {
+  var desde = document.getElementById('diag-desde').value;
+  var hasta  = document.getElementById('diag-hasta').value;
+  var uid    = document.getElementById('diag-unidad').value;
+  var tbody  = document.getElementById('diag-tbody');
+  tbody.innerHTML = '<tr><td colspan="11" class="empty">Analizando…</td></tr>';
+
+  var url = '/api/compras/diagnostico?fecha_desde=' + desde + '&fecha_hasta=' + hasta;
+  if (uid) url += '&id_unidad=' + uid;
+
+  var rows = await api(url);
+  tx('diag-count', rows.length + ' relaciones');
+
+  var sinAsig = rows.filter(function(r){ return r.estado_rel==='VACIO'; }).length;
+  var malAsig = rows.filter(function(r){ return r.estado_rel==='MAL'; }).length;
+  var okAsig  = rows.filter(function(r){ return r.estado_rel==='OK'; }).length;
+  document.getElementById('diag-kpis').innerHTML =
+    '<div class="kpi-card"><div class="kpi-lbl">Sin asignar</div><div class="kpi-val warn">' + sinAsig + '</div></div>' +
+    '<div class="kpi-card"><div class="kpi-lbl">Posible error</div><div class="kpi-val" style="color:var(--danger)">' + malAsig + '</div></div>' +
+    '<div class="kpi-card"><div class="kpi-lbl">Correctos</div><div class="kpi-val ok">' + okAsig + '</div></div>' +
+    '<div class="kpi-card"><div class="kpi-lbl">Total</div><div class="kpi-val brand">' + rows.length + '</div></div>';
+
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="11" class="empty">Sin registros en este período.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = rows.map(function(r) {
+    var sinC = r.estado_rel === 'VACIO';
+    var mal  = r.estado_rel === 'MAL';
+    var bg   = sinC ? 'background:var(--warn-lt)' : mal ? 'background:var(--danger-lt)' : '';
+    var enCurso = r.en_curso == 1;
+    var badge = sinC
+      ? '<span class="badge badge-warn">Sin asignar</span>'
+      : mal
+        ? '<span class="badge badge-danger">⚠ ' + r.relacion_km + '</span>'
+        : '<span class="badge badge-ok">' + r.relacion_km + '</span>';
+    var cursoTag = enCurso ? ' <span class="badge" style="background:var(--brand);color:#fff;font-size:9px">EN CURSO</span>' : '';
+    return '<tr style="' + bg + '">' +
+      '<td class="mono text-sm">#' + r.id_control + cursoTag + '</td>' +
+      '<td>' + fmtFecha(r.fecha_viaje) + '</td>' +
+      '<td><strong>' + (r.placa||'—') + '</strong></td>' +
+      '<td class="mono">' + (r.km_salida!=null?fmt.num(r.km_salida,0):'—') + '</td>' +
+      '<td class="mono">' + (r.km_retorno!=null?fmt.num(r.km_retorno,0):'—') + '</td>' +
+      '<td class="text-sm">' + (r.nro_comprobante||'<span class="text-muted">—</span>') + '</td>' +
+      '<td class="mono">' + (r.km_tanqueo!=null?fmt.num(r.km_tanqueo,0):'—') + '</td>' +
+      '<td class="mono">' + (r.cantidad_gll!=null?fmt.num(r.cantidad_gll,1):'—') + '</td>' +
+      '<td>' + badge + '</td>' +
+      '<td class="text-xs text-muted" style="max-width:180px">' + (r.motivo_mal||'') + '</td>' +
+      '<td>' +
+        '<button class="btn btn-xs btn-outline" title="Quitar asignación" ' +
+          'onclick="quitarAsignFila(' + r.id_control + ',' + (r.id_combustible||'null') + ')">🔄</button>' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+async function quitarAsignFila(id_ctrl, id_comb) {
+  var msg = id_comb && id_comb !== 'null'
+    ? 'Quitar la compra #' + id_comb + ' de este viaje?'
+    : 'Limpiar la fila vacía del viaje #' + id_ctrl + '?';
+  if (!confirm(msg)) return;
+  try {
+    if (id_comb && id_comb !== 'null') {
+      await api('/api/compras/asignar-viaje', {method:'POST', body:JSON.stringify({
+        id_control: id_ctrl, id_combustible: id_comb, accion: 'quitar'
+      })});
+    } else {
+      await api('/api/compras/asignar-viaje', {method:'POST', body:JSON.stringify({
+        id_control: id_ctrl, id_combustible: null, accion: 'reemplazar'
+      })});
+    }
+    toast('Asignacion quitada', 'ok');
+    cargarDiagnostico();
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function recalcularAsignaciones() {
+  if (!confirm(
+    'Esto revisará TODAS las asignaciones existentes y corregirá las que no\n' +
+    'cumplen la lógica de km (km_salida <= km_tanqueo <= km_retorno + 4).\n\n' +
+    'Las correctas no se tocan. Las incorrectas se actualizan a la compra correcta.\n\n' +
+    '¿Continuar?'
+  )) return;
+  try {
+    toast('Analizando y corrigiendo asignaciones...', 'warn');
+    var r = await api('/api/compras/recalcular-asignaciones', {method:'POST', body:JSON.stringify({solo_erroneos:true})});
+    toast(
+      '✓ ' + r.corregidos + ' corregidas · ' +
+      r.correctos + ' correctas · ' +
+      r.sin_match + ' sin compra válida (quedaron vacías) · ' +
+      r.total + ' revisadas',
+      'ok'
+    );
+    cargarDiagnostico();
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function limpiarNulos() {
+  if (!confirm('Eliminar todas las filas de detalle_consumo sin combustible asignado?')) return;
+  try {
+    var r = await api('/api/compras/limpiar-nulos', {method:'POST'});
+    toast('Eliminadas ' + r.eliminadas + ' filas vacias', 'ok');
+    cargarDiagnostico();
+  } catch(e) { toast('Error: ' + e.message, 'error'); }
+}
+
+// Poblar selector de unidades del diagnostico
+api('/api/unidades').then(function(us){
+  var sel = document.getElementById('diag-unidad');
+  if(!sel) return;
+  us.filter(function(u){ return u.tipo_unidad==='FLOTA'; }).forEach(function(u){
+    sel.insertAdjacentHTML('beforeend','<option value="'+u.id_unidad+'">'+u.placa+'</option>');
+  });
+}).catch(function(){});
 
 </script>
 
