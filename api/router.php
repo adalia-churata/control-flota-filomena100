@@ -511,19 +511,32 @@ if($r0==='compras'){
                 ) ?? 0);
                 if(abs($km_T - $km_ant) < 0.01){
                     if($en_curso){
-                        // Viaje en curso asignado a tanqueo anterior — puede ser prematuro
                         $r['relacion_km'] = 'ANTERIOR (EN CURSO)';
                         $r['estado_rel']  = 'MAL';
-                        $r['motivo_mal']  = 'Viaje sin retorno aún. Se asignó el tanqueo anterior prematuramente. Podría tanquear en ruta.';
+                        $r['motivo_mal']  = 'Viaje sin retorno aún. Se asignó el tanqueo anterior prematuramente.';
                     } else {
-                        $r['relacion_km'] = 'ANTERIOR';
-                        $r['estado_rel']  = 'OK';
-                        $r['motivo_mal']  = 'Tanqueo anterior al viaje (correcto, no hubo tanqueo en ruta)';
+                        // Verificar que no haya otros viajes entre km_T y km_salida
+                        // que ya "gastaron" ese combustible
+                        $viajes_intermedios = (int)(qval(
+                            "SELECT COUNT(*) FROM control_flota
+                             WHERE id_unidad=? AND km_salida > ? AND km_salida < ? AND km_retorno > 0",
+                            [$r['id_unidad'], $km_T, $km_s]
+                        ) ?? 0);
+                        $km_gap = round($km_s - $km_T, 0);
+                        if($viajes_intermedios > 0){
+                            $r['relacion_km'] = 'ANT-DUDOSO';
+                            $r['estado_rel']  = 'MAL';
+                            $r['motivo_mal']  = 'Hay '.$viajes_intermedios.' viaje(s) entre el tanqueo (km '.$km_T.') y este viaje (km '.$km_s.'). Diferencia: '.$km_gap.' km. El combustible probablemente ya fue consumido en esos viajes.';
+                        } else {
+                            $r['relacion_km'] = 'ANTERIOR';
+                            $r['estado_rel']  = 'OK';
+                            $r['motivo_mal']  = 'Sin viajes intermedios. Diferencia: '.$km_gap.' km desde el tanqueo.';
+                        }
                     }
                 } else {
                     $r['relacion_km'] = 'MAL-ANTERIOR';
                     $r['estado_rel']  = 'MAL';
-                    $r['motivo_mal']  = 'km tanqueo ('.$km_T.') no es el más reciente antes de la salida (más reciente: '.$km_ant.')';
+                    $r['motivo_mal']  = 'No es el tanqueo más reciente antes de la salida. Más reciente: km '.$km_ant.'.';
                 }
             } elseif(!$es_tanq && $km_T >= $km_s && ($km_r===0.0||$km_T<=$km_r)){
                 $r['relacion_km'] = 'EMERGENCIA';
@@ -587,7 +600,6 @@ if($r0==='compras'){
                        AND tanqueo=1 AND km_vehiculo IS NOT NULL AND km_vehiculo < ?",
                     [$rel['id_unidad'], $km_s]
                 ) ?? 0);
-                // Es correcto si es el ANTERIOR más reciente Y no hay tanqueo propio en el viaje
                 if(abs($km_T - $km_ant) < 0.01){
                     $tiene_propio = (int)(qval(
                         "SELECT COUNT(*) FROM detalle_consumo dc2
@@ -595,7 +607,13 @@ if($r0==='compras'){
                          WHERE dc2.id_control=? AND cc2.km_vehiculo>=? AND cc2.km_vehiculo<=?+?",
                         [$rel['id_control'], $km_s, $km_r, $MARGEN]
                     ) ?? 0);
-                    if(!$tiene_propio) $es_correcto = true;
+                    // ANTERIOR es correcto solo si no hay viajes intermedios entre tanqueo y salida
+                    $viajes_intermedios = (int)(qval(
+                        "SELECT COUNT(*) FROM control_flota
+                         WHERE id_unidad=? AND km_salida > ? AND km_salida < ? AND km_retorno > 0",
+                        [$rel['id_unidad'], $km_T, $km_s]
+                    ) ?? 0);
+                    if(!$tiene_propio && !$viajes_intermedios) $es_correcto = true;
                 }
             }
 
@@ -624,17 +642,47 @@ if($r0==='compras'){
             }
 
             if($correcta && $correcta['id_combustible'] != $rel['id_combustible']){
-                // Actualizar con la compra correcta
                 qrows('UPDATE detalle_consumo SET id_combustible=? WHERE id_detalle=?',
                     [$correcta['id_combustible'], $rel['id_detalle']]);
                 $corregidos++;
             } elseif(!$correcta){
-                // No hay compra válida — dejar con NULL para que aparezca como sin asignar
+                // Sin compra válida para este viaje → NULL
                 qrows('UPDATE detalle_consumo SET id_combustible=NULL WHERE id_detalle=?',
                     [$rel['id_detalle']]);
                 $eliminados++;
             } else {
                 $correctos++;
+            }
+
+            // Si la compra actual (incorrecta) tiene un viaje correcto al que pertenece,
+            // crear/actualizar esa relación también
+            if(!$es_correcto && $km_T > 0 && $km_s > 0 && $km_r > 0){
+                // Buscar el viaje donde sí pertenece esta compra
+                $viaje_correcto = qone(
+                    "SELECT id_control, km_recorrido FROM control_flota
+                     WHERE id_unidad=? AND km_salida <= ? AND km_retorno + ? >= ?
+                       AND km_retorno > 0
+                     ORDER BY km_salida DESC LIMIT 1",
+                    [$rel['id_unidad'], $km_T, $MARGEN, $km_T]
+                );
+                if($viaje_correcto && $viaje_correcto['id_control'] != $rel['id_control']){
+                    $ya = (int)(qval(
+                        'SELECT COUNT(*) FROM detalle_consumo WHERE id_control=? AND id_combustible=?',
+                        [$viaje_correcto['id_control'], $rel['id_combustible']]
+                    ) ?? 0);
+                    if(!$ya){
+                        // Asignar al viaje correcto
+                        $fila_null = qone('SELECT id_detalle FROM detalle_consumo WHERE id_control=? AND id_combustible IS NULL LIMIT 1',
+                            [$viaje_correcto['id_control']]);
+                        if($fila_null){
+                            qrows('UPDATE detalle_consumo SET id_combustible=? WHERE id_detalle=?',
+                                [$rel['id_combustible'], $fila_null['id_detalle']]);
+                        } else {
+                            qexec('INSERT INTO detalle_consumo(id_combustible,id_control,km_recorridos)VALUES(?,?,?)',
+                                [$rel['id_combustible'], $viaje_correcto['id_control'], $viaje_correcto['km_recorrido']]);
+                        }
+                    }
+                }
             }
         }
 
@@ -2052,7 +2100,8 @@ function run_assignment_viaje(int $id_ctrl, int $id_u, float $km_sal, float $km_
         );
     }
 
-    // Si viaje completado y sin ningún tanqueo propio: usar el ANTERIOR más reciente
+    // Si viaje completado y sin tanqueo propio: usar el ANTERIOR más reciente
+    // SOLO si no hay viajes intermedios que ya hayan consumido ese combustible
     $tiene_tanqueo = array_filter($candidatas, function($cp){ return (int)($cp['tanqueo']??1)===1; });
     if(!$tiene_tanqueo && $km_ret > 0){
         $ant = qone(
@@ -2063,7 +2112,15 @@ function run_assignment_viaje(int $id_ctrl, int $id_u, float $km_sal, float $km_
              ORDER BY km_vehiculo DESC LIMIT 1",
             [$id_u, $km_sal]
         );
-        if($ant) $candidatas[] = $ant;
+        if($ant){
+            // Verificar que no haya viajes entre el tanqueo y este viaje
+            $viajes_entre = (int)(qval(
+                "SELECT COUNT(*) FROM control_flota
+                 WHERE id_unidad=? AND km_salida > ? AND km_salida < ? AND km_retorno > 0",
+                [$id_u, (float)$ant['km_vehiculo'], $km_sal]
+            ) ?? 0);
+            if(!$viajes_entre) $candidatas[] = $ant;
+        }
     }
     if(!$candidatas) return ['asignado'=>false,'motivo'=>'sin tanqueo encontrado'];
 
