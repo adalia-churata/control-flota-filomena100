@@ -543,6 +543,79 @@ if($r0==='compras'){
         jout($rows);
     }
 
+    // POST /api/compras/recalcular-asignaciones
+    if($r1==='recalcular-asignaciones'&&$m==='POST'){
+        $MARGEN = 4;
+        $relaciones = qall(
+            "SELECT dc.id_detalle, dc.id_control, dc.id_combustible,
+                    cf.id_unidad, cf.km_salida, cf.km_retorno, cf.km_recorrido,
+                    cc.km_vehiculo AS km_T, cc.tanqueo,
+                    COALESCE((
+                        SELECT MAX(cx.km_vehiculo) FROM compra_combustible cx
+                        WHERE cx.id_unidad=cf.id_unidad AND cx.tipo_combustible='PETROLEO'
+                          AND cx.tanqueo=1 AND cx.km_vehiculo IS NOT NULL
+                          AND cx.km_vehiculo < cc.km_vehiculo
+                    ),0) AS km_T1
+             FROM detalle_consumo dc
+             JOIN control_flota cf ON dc.id_control=cf.id_control
+             JOIN unidad u ON cf.id_unidad=u.id_unidad AND u.tipo_unidad='FLOTA'
+             LEFT JOIN compra_combustible cc ON dc.id_combustible=cc.id_combustible
+             WHERE dc.id_combustible IS NOT NULL
+               AND cf.km_salida IS NOT NULL AND cf.km_retorno > 0"
+        );
+        $corregidos=0; $correctos=0; $eliminados=0;
+        foreach($relaciones as $rel){
+            $km_s=(float)($rel['km_salida']??0);
+            $km_r=(float)($rel['km_retorno']??0);
+            $km_T=(float)($rel['km_T']??0);
+            $km_T1=(float)($rel['km_T1']??0);
+            if($km_s<=0||$km_r<=0||$km_T<=0){$correctos++;continue;}
+            $es_tanq=(int)($rel['tanqueo']??1)===1;
+            // Verificar lógica de bloque
+            $ok = $es_tanq
+                ? ($km_s>$km_T1 && $km_r<=$km_T+$MARGEN)
+                : ($km_T>=$km_s && $km_T<=$km_r);
+            if($ok){$correctos++;continue;}
+            // Buscar compra correcta para este viaje usando lógica de bloque
+            $correcta=qone(
+                "SELECT cc.id_combustible FROM compra_combustible cc
+                 WHERE cc.id_unidad=? AND cc.tipo_combustible='PETROLEO' AND cc.tanqueo=1
+                   AND cc.km_vehiculo IS NOT NULL AND cc.km_vehiculo >= ?
+                   AND ? > COALESCE((
+                       SELECT MAX(cx.km_vehiculo) FROM compra_combustible cx
+                       WHERE cx.id_unidad=cc.id_unidad AND cx.tipo_combustible='PETROLEO'
+                         AND cx.tanqueo=1 AND cx.km_vehiculo < cc.km_vehiculo
+                   ),0)
+                   AND ? <= cc.km_vehiculo + ?
+                 ORDER BY cc.km_vehiculo ASC LIMIT 1",
+                [$rel['id_unidad'],$km_r-$MARGEN,$km_s,$km_r,$MARGEN]
+            );
+            if($correcta && $correcta['id_combustible']!=$rel['id_combustible']){
+                qrows('UPDATE detalle_consumo SET id_combustible=? WHERE id_detalle=?',
+                    [$correcta['id_combustible'],$rel['id_detalle']]);
+                // Asignar también al viaje correcto si la compra anterior tenía un viaje válido
+                $viaje_correcto=qone(
+                    "SELECT id_control,km_recorrido FROM control_flota
+                     WHERE id_unidad=? AND km_salida>? AND km_retorno<=?+? AND km_retorno>0
+                     ORDER BY km_salida DESC LIMIT 1",
+                    [$rel['id_unidad'],$km_T1,$km_T,$MARGEN]
+                );
+                if($viaje_correcto && $viaje_correcto['id_control']!=$rel['id_control']){
+                    $ex=(int)(qval('SELECT COUNT(*) FROM detalle_consumo WHERE id_control=? AND id_combustible=?',
+                        [$viaje_correcto['id_control'],$rel['id_combustible']])??0);
+                    if(!$ex) qexec('INSERT INTO detalle_consumo(id_combustible,id_control,km_recorridos)VALUES(?,?,?)',
+                        [$rel['id_combustible'],$viaje_correcto['id_control'],$viaje_correcto['km_recorrido']]);
+                }
+                $corregidos++;
+            } elseif(!$correcta){
+                qrows('UPDATE detalle_consumo SET id_combustible=NULL WHERE id_detalle=?',[$rel['id_detalle']]);
+                $eliminados++;
+            } else { $correctos++; }
+        }
+        jout(['ok'=>true,'total'=>count($relaciones),'correctos'=>$correctos,'corregidos'=>$corregidos,'sin_match'=>$eliminados,
+              'mensaje'=>$corregidos.' corregidas, '.$eliminados.' sin compra válida (quedaron vacías)']);
+    }
+
     // POST /api/compras/limpiar-nulos — elimina filas de detalle_consumo sin combustible
     if($r1==='limpiar-nulos'&&$m==='POST'){
         $n = qrows('DELETE FROM detalle_consumo WHERE id_combustible IS NULL');
