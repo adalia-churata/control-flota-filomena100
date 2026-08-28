@@ -542,14 +542,10 @@ if($r0==='compras'){
                 $r['relacion_km'] = 'EMERGENCIA';
                 $r['estado_rel']  = 'OK';
                 $r['motivo_mal']  = 'Compra parcial dentro del viaje';
-            } elseif($km_T > $km_r && $km_r > 0){
-                $r['relacion_km'] = 'POSTERIOR';
-                $r['estado_rel']  = 'MAL';
-                $r['motivo_mal']  = 'Tanqueo (km '.$km_T.') es POSTERIOR al retorno (km '.$km_r.')';
             } else {
-                $r['relacion_km'] = 'FUERA';
+                $r['relacion_km'] = 'FUERA DE BLOQUE';
                 $r['estado_rel']  = 'MAL';
-                $r['motivo_mal']  = 'km tanqueo '.$km_T.' no corresponde al rango '.$km_s.'→'.$km_r;
+                $r['motivo_mal']  = 'km_T('.$km_T.') no está en el bloque [T1='.(int)$km_T1_diag.'→T2]. km salida='.(int)$km_s.' km retorno='.(int)$km_r;
             }
         }
         unset($r);
@@ -589,8 +585,17 @@ if($r0==='compras'){
 
             if($km_r <= 0 || $km_s <= 0 || $km_T <= 0){ $correctos++; continue; }
 
-            // Verificar condición unificada
-            $es_correcto = ($km_T >= $km_s) && ($km_T <= $km_r + $MARGEN);
+            // LÓGICA DE BLOQUE
+            $km_T1_rec = (float)(qval(
+                "SELECT MAX(km_vehiculo) FROM compra_combustible
+                 WHERE id_unidad=? AND tipo_combustible='PETROLEO'
+                   AND tanqueo=1 AND km_vehiculo IS NOT NULL AND km_vehiculo < ?",
+                [$rel['id_unidad'], $km_T]
+            ) ?? 0);
+            $es_tanq_rec = (int)($rel['tanqueo'] ?? 1) === 1;
+            $es_correcto = $es_tanq_rec
+                ? ($km_s > $km_T1_rec && $km_r <= $km_T + $MARGEN)
+                : ($km_T >= $km_s && $km_T <= $km_r);
 
             // Para ANTERIOR: km_T < km_salida pero es el más reciente antes de la salida
             if(!$es_correcto && $km_T < $km_s){
@@ -617,29 +622,39 @@ if($r0==='compras'){
                 }
             }
 
-            if($es_correcto){ $correctos++; continue; }
+            if($es_correcto){
+                // Determinar etiqueta descriptiva
+                if($es_tanq_diag && $km_s > $km_T1_diag && $km_r <= $km_T + $MARGEN){
+                    $r['relacion_km'] = 'BLOQUE';
+                    $r['estado_rel']  = 'OK';
+                    $r['motivo_mal']  = 'Viaje entre T1(km '.(int)$km_T1_diag.') y T2(km '.(int)$km_T.'). Correcto.';
+                } else {
+                    $r['relacion_km'] = 'OK';
+                    $r['estado_rel']  = 'OK';
+                    $r['motivo_mal']  = '';
+                }
+                $correctos++;
+                continue;
+            }
 
             // Relación incorrecta — buscar la compra correcta para este viaje
             // Primero intentar con la lógica unificada
+            // Buscar el tanqueo T2 correcto para este viaje usando lógica de bloque
             $correcta = qone(
-                "SELECT id_combustible FROM compra_combustible
-                 WHERE id_unidad=? AND tipo_combustible='PETROLEO' AND tanqueo=1
-                   AND km_vehiculo IS NOT NULL
-                   AND km_vehiculo >= ? AND km_vehiculo <= ? + ?
-                 ORDER BY km_vehiculo ASC LIMIT 1",
-                [$rel['id_unidad'], $km_s, $km_r, $MARGEN]
+                "SELECT cc.id_combustible
+                 FROM compra_combustible cc
+                 WHERE cc.id_unidad=? AND cc.tipo_combustible='PETROLEO' AND cc.tanqueo=1
+                   AND cc.km_vehiculo IS NOT NULL
+                   AND cc.km_vehiculo >= ?
+                   AND ? > COALESCE((
+                       SELECT MAX(cx.km_vehiculo) FROM compra_combustible cx
+                       WHERE cx.id_unidad=cc.id_unidad AND cx.tipo_combustible='PETROLEO'
+                         AND cx.tanqueo=1 AND cx.km_vehiculo < cc.km_vehiculo
+                   ), 0)
+                   AND ? <= cc.km_vehiculo + ?
+                 ORDER BY cc.km_vehiculo ASC LIMIT 1",
+                [$rel['id_unidad'], $km_r - $MARGEN, $km_s, $km_r, $MARGEN]
             );
-
-            if(!$correcta){
-                // Intentar con ANTERIOR
-                $correcta = qone(
-                    "SELECT id_combustible FROM compra_combustible
-                     WHERE id_unidad=? AND tipo_combustible='PETROLEO' AND tanqueo=1
-                       AND km_vehiculo IS NOT NULL AND km_vehiculo < ?
-                     ORDER BY km_vehiculo DESC LIMIT 1",
-                    [$rel['id_unidad'], $km_s]
-                );
-            }
 
             if($correcta && $correcta['id_combustible'] != $rel['id_combustible']){
                 qrows('UPDATE detalle_consumo SET id_combustible=? WHERE id_detalle=?',
@@ -1980,74 +1995,92 @@ function run_assignment(int $id_combustible): array {
 
     if ($tipo === 'FLOTA' && $km_T > 0) {
 
-        // LÓGICA UNIFICADA: km_salida <= km_T <= km_retorno + MARGEN
-        // Cubre todos los escenarios: regular, semi-regular, Lima, Chala
-        // Aplica igual para tanqueos completos y emergencias
+        // LÓGICA DE BLOQUE:
+        // Un viaje pertenece al tanqueo T2 (esta compra) si:
+        //   km_salida > T1  (salió después del tanqueo anterior)
+        //   km_retorno <= T2 + MARGEN  (retornó antes/en este tanqueo)
+        //
+        // T1 = tanqueo completo más reciente ANTES de esta compra (km_T)
+        // Si no hay T1 (primer tanqueo): km_salida puede ser cualquier valor < T2
 
-        $viajes_rango = qall(
-            "SELECT cf.id_control, cf.km_salida, cf.km_retorno, cf.km_recorrido
-             FROM control_flota cf
-             WHERE cf.id_unidad  = ?
-               AND cf.km_salida  IS NOT NULL
-               AND cf.km_retorno IS NOT NULL AND cf.km_retorno > 0
-               AND cf.km_salida  <= ?
-               AND cf.km_retorno + ? >= ?",
-            [$c['id_unidad'], $km_T, $margen, $km_T]
-        );
+        $km_T1 = (float)(qval(
+            "SELECT MAX(km_vehiculo) FROM compra_combustible
+             WHERE id_unidad=? AND tipo_combustible='PETROLEO'
+               AND tanqueo=1 AND km_vehiculo IS NOT NULL AND km_vehiculo < ?",
+            [$c['id_unidad'], $km_T]
+        ) ?? 0);
 
-        foreach($viajes_rango as $v){
-            $id_ctrl = (int)$v['id_control'];
-            $ex = (int)(qval('SELECT COUNT(*) FROM detalle_consumo WHERE id_control=? AND id_combustible=?',[$id_ctrl,$id_combustible])??0);
-            if($ex) continue;
-            if($es_tanqueo){
-                $fila_null = qone('SELECT id_detalle FROM detalle_consumo WHERE id_control=? AND id_combustible IS NULL LIMIT 1',[$id_ctrl]);
-                if($fila_null){
-                    qrows('UPDATE detalle_consumo SET id_combustible=?,km_recorridos=? WHERE id_detalle=?',
-                        [$id_combustible,$v['km_recorrido'],$fila_null['id_detalle']]);
-                } else {
-                    qexec('INSERT INTO detalle_consumo(id_combustible,id_control,km_recorridos)VALUES(?,?,?)',
-                        [$id_combustible,$id_ctrl,$v['km_recorrido']]);
-                }
-            } else {
-                // Emergencia: INSERT adicional siempre
-                qexec('INSERT INTO detalle_consumo(id_combustible,id_control,km_recorridos)VALUES(?,?,?)',
-                    [$id_combustible,$id_ctrl,$v['km_recorrido']]);
-            }
-            $updated++;
-        }
-
-        // Si tanqueo completo: también asignar viajes posteriores sin tanqueo propio
-        // (viajes que salieron DESPUÉS de este tanqueo y no tienen otro tanqueo en su rango)
         if($es_tanqueo){
-            $viajes_post = qall(
+            // Tanqueo completo: asignar viajes completados en el bloque [T1, T2]
+            $viajes_bloque = qall(
                 "SELECT cf.id_control, cf.km_recorrido
                  FROM control_flota cf
                  WHERE cf.id_unidad  = ?
                    AND cf.km_salida  IS NOT NULL
                    AND cf.km_retorno IS NOT NULL AND cf.km_retorno > 0
                    AND cf.km_salida  > ?
-                   AND NOT EXISTS (
-                       SELECT 1 FROM compra_combustible cx
-                       WHERE cx.id_unidad=? AND cx.tipo_combustible='PETROLEO'
-                         AND cx.tanqueo=1 AND cx.km_vehiculo IS NOT NULL
-                         AND cx.km_vehiculo >= cf.km_salida
-                         AND cx.km_vehiculo <= cf.km_retorno + ?
-                   )",
-                [$c['id_unidad'], $km_T, $c['id_unidad'], $margen]
+                   AND cf.km_retorno <= ? + ?",
+                [$c['id_unidad'], $km_T1, $km_T, $margen]
             );
-            foreach($viajes_post as $v){
+
+            foreach($viajes_bloque as $v){
                 $id_ctrl = (int)$v['id_control'];
-                $ex = (int)(qval('SELECT COUNT(*) FROM detalle_consumo WHERE id_control=? AND id_combustible=?',[$id_ctrl,$id_combustible])??0);
+                $ex = (int)(qval(
+                    'SELECT COUNT(*) FROM detalle_consumo WHERE id_control=? AND id_combustible=?',
+                    [$id_ctrl, $id_combustible]
+                ) ?? 0);
                 if($ex) continue;
-                $fila_null = qone('SELECT id_detalle FROM detalle_consumo WHERE id_control=? AND id_combustible IS NULL LIMIT 1',[$id_ctrl]);
+
+                // Quitar asignaciones incorrectas previas (ANTERIOR mal asignado)
+                $fila_null = qone(
+                    'SELECT id_detalle FROM detalle_consumo WHERE id_control=? AND id_combustible IS NULL LIMIT 1',
+                    [$id_ctrl]
+                );
                 if($fila_null){
                     qrows('UPDATE detalle_consumo SET id_combustible=?,km_recorridos=? WHERE id_detalle=?',
-                        [$id_combustible,$v['km_recorrido'],$fila_null['id_detalle']]);
+                        [$id_combustible, $v['km_recorrido'], $fila_null['id_detalle']]);
                 } else {
-                    qexec('INSERT INTO detalle_consumo(id_combustible,id_control,km_recorridos)VALUES(?,?,?)',
-                        [$id_combustible,$id_ctrl,$v['km_recorrido']]);
+                    // Si tiene asignación anterior incorrecta (del viejo ANTERIOR), reemplazar
+                    $fila_ant = qone(
+                        "SELECT dc.id_detalle FROM detalle_consumo dc
+                         JOIN compra_combustible cc ON dc.id_combustible=cc.id_combustible
+                         WHERE dc.id_control=? AND cc.km_vehiculo=?",
+                        [$id_ctrl, $km_T1]
+                    );
+                    if($fila_ant){
+                        qrows('UPDATE detalle_consumo SET id_combustible=? WHERE id_detalle=?',
+                            [$id_combustible, $fila_ant['id_detalle']]);
+                    } else {
+                        qexec('INSERT INTO detalle_consumo(id_combustible,id_control,km_recorridos)VALUES(?,?,?)',
+                            [$id_combustible, $id_ctrl, $v['km_recorrido']]);
+                    }
                 }
                 $updated++;
+            }
+        } else {
+            // Emergencia (tanqueo=0): INSERT adicional en el viaje cuyo bloque contiene este km
+            $viaje_emg = qone(
+                "SELECT cf.id_control, cf.km_recorrido
+                 FROM control_flota cf
+                 WHERE cf.id_unidad  = ?
+                   AND cf.km_salida  IS NOT NULL
+                   AND cf.km_retorno IS NOT NULL AND cf.km_retorno > 0
+                   AND cf.km_salida  <= ?
+                   AND cf.km_retorno >= ?
+                 ORDER BY cf.km_salida DESC LIMIT 1",
+                [$c['id_unidad'], $km_T, $km_T]
+            );
+            if($viaje_emg){
+                $id_ctrl = (int)$viaje_emg['id_control'];
+                $ex = (int)(qval(
+                    'SELECT COUNT(*) FROM detalle_consumo WHERE id_control=? AND id_combustible=?',
+                    [$id_ctrl, $id_combustible]
+                ) ?? 0);
+                if(!$ex){
+                    qexec('INSERT INTO detalle_consumo(id_combustible,id_control,km_recorridos)VALUES(?,?,?)',
+                        [$id_combustible, $id_ctrl, $viaje_emg['km_recorrido']]);
+                    $updated++;
+                }
             }
         }
     } elseif ($tipo === 'MAQ. PESADA' && $km_T > 0) {
@@ -2073,54 +2106,71 @@ function run_assignment_viaje(int $id_ctrl, int $id_u, float $km_sal, float $km_
     $MARGEN = 4;
     $km_rec = (float)(qval('SELECT km_recorrido FROM control_flota WHERE id_control=?',[$id_ctrl])??0);
 
-    // LÓGICA UNIFICADA: km_salida <= km_T <= km_retorno + MARGEN
-    // Misma condición para tanqueos y emergencias
-    if($km_ret > 0){
-        $candidatas = qall(
-            "SELECT id_combustible, km_vehiculo, tanqueo,
-                    CASE WHEN tanqueo=0 THEN 'EMERGENCIA' ELSE 'DURANTE' END AS relacion
-             FROM compra_combustible
-             WHERE id_unidad=? AND tipo_combustible='PETROLEO'
-               AND km_vehiculo IS NOT NULL
-               AND km_vehiculo >= ?
-               AND km_vehiculo <= ? + ?
-             ORDER BY km_vehiculo ASC",
-            [$id_u, $km_sal, $km_ret, $MARGEN]
-        );
-    } else {
-        // Viaje en curso: solo tanqueos muy cercanos a la salida (≤ MARGEN)
-        $candidatas = qall(
-            "SELECT id_combustible, km_vehiculo, tanqueo, 'EN_CURSO' AS relacion
-             FROM compra_combustible
-             WHERE id_unidad=? AND tipo_combustible='PETROLEO'
-               AND km_vehiculo IS NOT NULL
-               AND km_vehiculo >= ? AND km_vehiculo <= ? + ?
-             ORDER BY km_vehiculo ASC",
-            [$id_u, $km_sal, $km_sal, $MARGEN]
-        );
-    }
+    // LÓGICA DE BLOQUE:
+    // Este viaje pertenece al tanqueo T2 donde:
+    //   km_salida > T1 (anterior) AND km_retorno <= T2 + MARGEN
+    //
+    // Buscar T2: el tanqueo completo más reciente tal que km_retorno <= km_T2 + MARGEN
+    $candidatas = [];
 
-    // Si viaje completado y sin tanqueo propio: usar el ANTERIOR más reciente
-    // SOLO si no hay viajes intermedios que ya hayan consumido ese combustible
-    $tiene_tanqueo = array_filter($candidatas, function($cp){ return (int)($cp['tanqueo']??1)===1; });
-    if(!$tiene_tanqueo && $km_ret > 0){
-        $ant = qone(
-            "SELECT id_combustible, km_vehiculo, tanqueo, 'ANTERIOR' AS relacion
+    if($km_ret > 0){
+        // Viaje completado: buscar el tanqueo T2 que cierra este bloque
+        // T2 debe cumplir: km_ret <= T2 + MARGEN  (retornó antes/en el tanqueo)
+        // Y T1 < km_sal  (salió después del tanqueo anterior a T2)
+        $tanqueos_candidatos = qall(
+            "SELECT cc.id_combustible, cc.km_vehiculo AS km_T2,
+                    COALESCE((
+                        SELECT MAX(cx.km_vehiculo) FROM compra_combustible cx
+                        WHERE cx.id_unidad=? AND cx.tipo_combustible='PETROLEO'
+                          AND cx.tanqueo=1 AND cx.km_vehiculo < cc.km_vehiculo
+                    ), 0) AS km_T1
+             FROM compra_combustible cc
+             WHERE cc.id_unidad=? AND cc.tipo_combustible='PETROLEO'
+               AND cc.tanqueo=1 AND cc.km_vehiculo IS NOT NULL
+               AND cc.km_vehiculo >= ?
+             ORDER BY cc.km_vehiculo ASC",
+            [$id_u, $id_u, $km_ret - $MARGEN]  // T2 >= km_retorno - MARGEN
+        );
+
+        foreach($tanqueos_candidatos as $t){
+            $km_T2 = (float)$t['km_T2'];
+            $km_T1 = (float)$t['km_T1'];
+            // Verificar que el viaje cae en este bloque
+            if($km_sal > $km_T1 && $km_ret <= $km_T2 + $MARGEN){
+                $candidatas[] = [
+                    'id_combustible' => $t['id_combustible'],
+                    'km_vehiculo'    => $km_T2,
+                    'tanqueo'        => 1,
+                    'relacion'       => 'BLOQUE',
+                ];
+                break; // un viaje pertenece a un solo bloque
+            }
+        }
+
+        // Agregar emergencias dentro del trayecto del viaje
+        $emergencias = qall(
+            "SELECT id_combustible, km_vehiculo, 0 AS tanqueo, 'EMERGENCIA' AS relacion
+             FROM compra_combustible
+             WHERE id_unidad=? AND tipo_combustible='PETROLEO' AND tanqueo=0
+               AND km_vehiculo IS NOT NULL
+               AND km_vehiculo >= ? AND km_vehiculo <= ?
+             ORDER BY km_vehiculo ASC",
+            [$id_u, $km_sal, $km_ret]
+        );
+        $candidatas = array_merge($candidatas, $emergencias);
+
+    } else {
+        // Viaje en curso: buscar tanqueo muy cercano a la salida
+        $tanq_inicio = qone(
+            "SELECT id_combustible, km_vehiculo, 1 AS tanqueo, 'INICIO' AS relacion
              FROM compra_combustible
              WHERE id_unidad=? AND tipo_combustible='PETROLEO' AND tanqueo=1
-               AND km_vehiculo IS NOT NULL AND km_vehiculo < ?
-             ORDER BY km_vehiculo DESC LIMIT 1",
-            [$id_u, $km_sal]
+               AND km_vehiculo IS NOT NULL
+               AND km_vehiculo >= ? AND km_vehiculo <= ? + ?
+             ORDER BY km_vehiculo ASC LIMIT 1",
+            [$id_u, $km_sal, $km_sal, $MARGEN]
         );
-        if($ant){
-            // Verificar que no haya viajes entre el tanqueo y este viaje
-            $viajes_entre = (int)(qval(
-                "SELECT COUNT(*) FROM control_flota
-                 WHERE id_unidad=? AND km_salida > ? AND km_salida < ? AND km_retorno > 0",
-                [$id_u, (float)$ant['km_vehiculo'], $km_sal]
-            ) ?? 0);
-            if(!$viajes_entre) $candidatas[] = $ant;
-        }
+        if($tanq_inicio) $candidatas[] = $tanq_inicio;
     }
     if(!$candidatas) return ['asignado'=>false,'motivo'=>'sin tanqueo encontrado'];
 
