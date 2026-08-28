@@ -1172,6 +1172,11 @@ if($r0==='ge'){
 // MANTENIMIENTO
 // ════════════════════════════════════════════════════════════
 if($r0==='mantenimiento'){
+    if($r1==='plan-tareas'){
+        $id_u=gget('id_unidad');
+        if(!$id_u)jout([]);
+        jout(qall('SELECT id_plan,tarea,frecuencia_km,frecuencia_horas FROM plan_mantenimiento WHERE id_unidad=? ORDER BY tarea',[$id_u]));
+    }
     if($r1==='historial'&&$m==='GET'){
         $sql='SELECT hm.*,u.placa,u.tipo_unidad FROM historial_mantenimiento hm JOIN unidad u ON hm.id_unidad=u.id_unidad WHERE 1=1';
         $p=[];
@@ -1187,6 +1192,8 @@ if($r0==='mantenimiento'){
         $id_plan=isset($d['id_plan'])&&$d['id_plan']?((int)$d['id_plan']):null;
         $costo_rep=(float)($d['costo_repuestos']??0);
         $costo_mo=(float)($d['costo_mano_obra']??0);
+        if(!$d['id_unidad']||!$d['fecha_ejecucion']||!$d['tipo_mantenimiento'])
+            jout(['error'=>'Campos obligatorios: id_unidad, fecha_ejecucion, tipo_mantenimiento'],400);
         $id=qexec('INSERT INTO historial_mantenimiento(id_unidad,fecha_ejecucion,tipo_mantenimiento,tipo_mant_categoria,id_plan,km_registro,horometro_registro,descripcion_trabajo,marca,costo_repuestos,costo_mano_obra,costo_total_soles)VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
             [$d['id_unidad'],$d['fecha_ejecucion'],$d['tipo_mantenimiento'],$cat,$id_plan,$d['km_registro']??null,$d['horometro_registro']??null,$d['descripcion_trabajo']??'',$d['marca']??null,$costo_rep,$costo_mo,round($costo_rep+$costo_mo,2)]);
         jout(['id_mantenimiento'=>(int)$id],201);
