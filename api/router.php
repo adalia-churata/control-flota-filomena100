@@ -497,55 +497,42 @@ if($r0==='compras'){
 
             $dif_ret = $km_r > 0 ? $km_r - $km_T : -1;
 
-            // Clasificar
-            if($es_tanq && $km_T >= $km_s && $dif_ret <= $MARGEN){
-                $r['relacion_km'] = 'DURANTE';
-                $r['estado_rel']  = 'OK';
-                $r['motivo_mal']  = '';
-            } elseif($es_tanq && $km_T < $km_s){
-                $km_ant = (float)(qval(
-                    "SELECT MAX(km_vehiculo) FROM compra_combustible
-                     WHERE id_unidad=? AND tipo_combustible='PETROLEO'
-                       AND tanqueo=1 AND km_vehiculo IS NOT NULL AND km_vehiculo<?",
-                    [$r['id_unidad'], $km_s]
-                ) ?? 0);
-                if(abs($km_T - $km_ant) < 0.01){
-                    if($en_curso){
-                        $r['relacion_km'] = 'ANTERIOR (EN CURSO)';
-                        $r['estado_rel']  = 'MAL';
-                        $r['motivo_mal']  = 'Viaje sin retorno aún. Se asignó el tanqueo anterior prematuramente.';
-                    } else {
-                        // Verificar que no haya otros viajes entre km_T y km_salida
-                        // que ya "gastaron" ese combustible
-                        $viajes_intermedios = (int)(qval(
-                            "SELECT COUNT(*) FROM control_flota
-                             WHERE id_unidad=? AND km_salida > ? AND km_salida < ? AND km_retorno > 0",
-                            [$r['id_unidad'], $km_T, $km_s]
-                        ) ?? 0);
-                        $km_gap = round($km_s - $km_T, 0);
-                        if($viajes_intermedios > 0){
-                            $r['relacion_km'] = 'ANT-DUDOSO';
-                            $r['estado_rel']  = 'MAL';
-                            $r['motivo_mal']  = 'Hay '.$viajes_intermedios.' viaje(s) entre el tanqueo (km '.$km_T.') y este viaje (km '.$km_s.'). Diferencia: '.$km_gap.' km. El combustible probablemente ya fue consumido en esos viajes.';
-                        } else {
-                            $r['relacion_km'] = 'ANTERIOR';
-                            $r['estado_rel']  = 'OK';
-                            $r['motivo_mal']  = 'Sin viajes intermedios. Diferencia: '.$km_gap.' km desde el tanqueo.';
-                        }
-                    }
+            // CLASIFICACIÓN POR LÓGICA DE BLOQUE:
+            // Correcto si: km_sal > T1 AND km_ret <= T2(km_T) + MARGEN
+            // Emergencia correcta si: km_T dentro del trayecto (km_sal <= km_T <= km_ret)
+            if(!$es_tanq_diag){
+                // Emergencia (tanqueo=0)
+                if($km_T >= $km_s && ($km_r===0.0 || $km_T <= $km_r)){
+                    $r['relacion_km'] = 'EMERGENCIA';
+                    $r['estado_rel']  = 'OK';
+                    $r['motivo_mal']  = 'Compra parcial dentro del trayecto del viaje';
                 } else {
-                    $r['relacion_km'] = 'MAL-ANTERIOR';
+                    $r['relacion_km'] = 'EMG-FUERA';
                     $r['estado_rel']  = 'MAL';
-                    $r['motivo_mal']  = 'No es el tanqueo más reciente antes de la salida. Más reciente: km '.$km_ant.'.';
+                    $r['motivo_mal']  = 'Emergencia km '.(int)$km_T.' fuera del trayecto ('.(int)$km_s.'→'.(int)$km_r.')';
                 }
-            } elseif(!$es_tanq && $km_T >= $km_s && ($km_r===0.0||$km_T<=$km_r)){
-                $r['relacion_km'] = 'EMERGENCIA';
-                $r['estado_rel']  = 'OK';
-                $r['motivo_mal']  = 'Compra parcial dentro del viaje';
+            } elseif($km_s > $km_T1_diag && $km_r <= $km_T + $MARGEN){
+                // CORRECTO: viaje dentro del bloque [T1, T2]
+                if($en_curso){
+                    $r['relacion_km'] = 'BLOQUE (EN CURSO)';
+                    $r['estado_rel']  = 'OK';
+                    $r['motivo_mal']  = 'Viaje en curso. Bloque T1=km '.(int)$km_T1_diag.' → T2=km '.(int)$km_T;
+                } else {
+                    $r['relacion_km'] = 'BLOQUE';
+                    $r['estado_rel']  = 'OK';
+                    $r['motivo_mal']  = 'Bloque T1=km '.(int)$km_T1_diag.' → T2=km '.(int)$km_T;
+                }
+            } elseif($km_r > $km_T + $MARGEN && $km_s <= $km_T){
+                // km_T dentro del viaje pero km_ret pasó al siguiente bloque
+                // → Le pertenece al siguiente tanqueo
+                $r['relacion_km'] = 'MAL-BLOQUE';
+                $r['estado_rel']  = 'MAL';
+                $r['motivo_mal']  = 'km_ret('.(int)$km_r.') superó T2('.(int)$km_T.')+4=('.(int)($km_T+$MARGEN).'). Este viaje pertenece al siguiente tanqueo.';
             } else {
+                // Tanqueo fuera del bloque del viaje completamente
                 $r['relacion_km'] = 'FUERA DE BLOQUE';
                 $r['estado_rel']  = 'MAL';
-                $r['motivo_mal']  = 'km_T('.$km_T.') no está en el bloque [T1='.(int)$km_T1_diag.'→T2]. km salida='.(int)$km_s.' km retorno='.(int)$km_r;
+                $r['motivo_mal']  = 'Bloque esperado: T1='.(int)$km_T1_diag.'→T2='.(int)$km_T.'. Viaje: '.(int)$km_s.'→'.(int)$km_r.'. No coincide.';
             }
         }
         unset($r);
@@ -598,29 +585,9 @@ if($r0==='compras'){
                 : ($km_T >= $km_s && $km_T <= $km_r);
 
             // Para ANTERIOR: km_T < km_salida pero es el más reciente antes de la salida
-            if(!$es_correcto && $km_T < $km_s){
-                $km_ant = (float)(qval(
-                    "SELECT MAX(km_vehiculo) FROM compra_combustible
-                     WHERE id_unidad=? AND tipo_combustible='PETROLEO'
-                       AND tanqueo=1 AND km_vehiculo IS NOT NULL AND km_vehiculo < ?",
-                    [$rel['id_unidad'], $km_s]
-                ) ?? 0);
-                if(abs($km_T - $km_ant) < 0.01){
-                    $tiene_propio = (int)(qval(
-                        "SELECT COUNT(*) FROM detalle_consumo dc2
-                         JOIN compra_combustible cc2 ON dc2.id_combustible=cc2.id_combustible
-                         WHERE dc2.id_control=? AND cc2.km_vehiculo>=? AND cc2.km_vehiculo<=?+?",
-                        [$rel['id_control'], $km_s, $km_r, $MARGEN]
-                    ) ?? 0);
-                    // ANTERIOR es correcto solo si no hay viajes intermedios entre tanqueo y salida
-                    $viajes_intermedios = (int)(qval(
-                        "SELECT COUNT(*) FROM control_flota
-                         WHERE id_unidad=? AND km_salida > ? AND km_salida < ? AND km_retorno > 0",
-                        [$rel['id_unidad'], $km_T, $km_s]
-                    ) ?? 0);
-                    if(!$tiene_propio && !$viajes_intermedios) $es_correcto = true;
-                }
-            }
+            // Con lógica de bloque, un ANTERIOR nunca es correcto si km_ret > km_T + MARGEN
+            // Solo es correcto si: km_sal > km_T1 AND km_ret <= km_T + MARGEN
+            // (ya calculado en $es_correcto arriba)
 
             if($es_correcto){
                 // Determinar etiqueta descriptiva
