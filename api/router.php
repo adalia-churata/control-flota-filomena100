@@ -444,18 +444,19 @@ if($r0==='compras'){
     }
     // Asignación manual viaje flota
     // POST /api/compras/reasignar-vacios
-    // GET /api/compras/diagnostico — ver todas las relaciones viaje↔combustible con estado
+    // GET /api/compras/diagnostico
     if($r1==='diagnostico'&&$m==='GET'){
-        $fd = gget('fecha_desde', date('Y-m-01'));
-        $fh = gget('fecha_hasta', date('Y-m-d'));
+        $fd  = gget('fecha_desde', date('Y-m-01'));
+        $fh  = gget('fecha_hasta', date('Y-m-d'));
         $uid = gget('id_unidad');
         $MARGEN = 4;
 
+        // Una sola query con subconsulta para T1 (tanqueo anterior a cada compra)
+        // Evita N queries individuales que causan timeout
         $sql = "SELECT
                     dc.id_detalle,
                     dc.id_control,
                     dc.id_combustible,
-                    dc.km_recorridos,
                     cf.fecha         AS fecha_viaje,
                     cf.km_salida,
                     cf.km_retorno,
@@ -464,25 +465,38 @@ if($r0==='compras'){
                     u.id_unidad,
                     cc.km_vehiculo   AS km_tanqueo,
                     cc.cantidad_gll,
-                    cc.fecha         AS fecha_compra,
                     cc.nro_comprobante,
-                    cc.tanqueo
+                    cc.tanqueo,
+                    -- T1: tanqueo completo anterior a esta compra (mismo vehículo)
+                    COALESCE((
+                        SELECT MAX(cx.km_vehiculo)
+                        FROM compra_combustible cx
+                        WHERE cx.id_unidad        = u.id_unidad
+                          AND cx.tipo_combustible = 'PETROLEO'
+                          AND cx.tanqueo          = 1
+                          AND cx.km_vehiculo      IS NOT NULL
+                          AND cx.km_vehiculo      < cc.km_vehiculo
+                    ), 0) AS km_T1,
+                    -- Viajes en curso (sin retorno)
+                    CASE WHEN cf.km_retorno IS NULL OR cf.km_retorno = 0 THEN 1 ELSE 0 END AS en_curso
                 FROM detalle_consumo dc
                 JOIN control_flota cf ON dc.id_control = cf.id_control
-                JOIN unidad u ON cf.id_unidad = u.id_unidad
+                JOIN unidad u ON cf.id_unidad = u.id_unidad AND u.tipo_unidad = 'FLOTA'
                 LEFT JOIN compra_combustible cc ON dc.id_combustible = cc.id_combustible
-                WHERE cf.fecha BETWEEN ? AND ?
-                  AND u.tipo_unidad = 'FLOTA'";
+                WHERE cf.fecha BETWEEN ? AND ?";
         $p = [$fd, $fh];
         if($uid){ $sql .= ' AND u.id_unidad=?'; $p[] = $uid; }
-        $sql .= ' ORDER BY cf.fecha DESC, cf.id_control DESC, dc.id_detalle ASC LIMIT 1000';
+        $sql .= ' ORDER BY cf.fecha DESC, u.placa, cf.km_salida DESC LIMIT 1000';
 
         $rows = qall($sql, $p);
 
-        // Calcular relacion y estado de cada fila
+        // Clasificar en PHP (sin queries adicionales)
         foreach($rows as &$r){
-            $en_curso = (!$r['km_retorno'] || (float)$r['km_retorno'] === 0.0);
-            $r['en_curso'] = $en_curso ? 1 : 0;
+            $km_s  = (float)($r['km_salida']   ?? 0);
+            $km_r  = (float)($r['km_retorno']  ?? 0);
+            $km_T  = (float)($r['km_tanqueo']  ?? 0);
+            $km_T1 = (float)($r['km_T1']       ?? 0);
+            $en_curso = (int)$r['en_curso'];
 
             if(!$r['id_combustible']){
                 $r['relacion_km'] = 'SIN ASIGNAR';
@@ -490,192 +504,43 @@ if($r0==='compras'){
                 $r['motivo_mal']  = 'No tiene combustible asignado';
                 continue;
             }
-            $km_s = (float)($r['km_salida']  ?? 0);
-            $km_r = (float)($r['km_retorno'] ?? 0);
-            $km_T = (float)($r['km_tanqueo'] ?? 0);
+            if($km_s<=0){ $r['relacion_km']='OK'; $r['estado_rel']='OK'; $r['motivo_mal']=''; continue; }
+
             $es_tanq = (int)($r['tanqueo'] ?? 1) === 1;
 
-            $dif_ret = $km_r > 0 ? $km_r - $km_T : -1;
-
-            // CLASIFICACIÓN POR LÓGICA DE BLOQUE:
-            // Correcto si: km_sal > T1 AND km_ret <= T2(km_T) + MARGEN
-            // Emergencia correcta si: km_T dentro del trayecto (km_sal <= km_T <= km_ret)
-            if(!$es_tanq_diag){
-                // Emergencia (tanqueo=0)
+            if(!$es_tanq){
+                // Emergencia: km_T debe estar dentro del trayecto
                 if($km_T >= $km_s && ($km_r===0.0 || $km_T <= $km_r)){
-                    $r['relacion_km'] = 'EMERGENCIA';
-                    $r['estado_rel']  = 'OK';
-                    $r['motivo_mal']  = 'Compra parcial dentro del trayecto del viaje';
+                    $r['relacion_km'] = 'EMERGENCIA'; $r['estado_rel'] = 'OK';
+                    $r['motivo_mal']  = 'Compra parcial dentro del trayecto';
                 } else {
-                    $r['relacion_km'] = 'EMG-FUERA';
-                    $r['estado_rel']  = 'MAL';
+                    $r['relacion_km'] = 'EMG-FUERA'; $r['estado_rel'] = 'MAL';
                     $r['motivo_mal']  = 'Emergencia km '.(int)$km_T.' fuera del trayecto ('.(int)$km_s.'→'.(int)$km_r.')';
                 }
-            } elseif($km_s > $km_T1_diag && $km_r <= $km_T + $MARGEN){
-                // CORRECTO: viaje dentro del bloque [T1, T2]
-                if($en_curso){
-                    $r['relacion_km'] = 'BLOQUE (EN CURSO)';
-                    $r['estado_rel']  = 'OK';
-                    $r['motivo_mal']  = 'Viaje en curso. Bloque T1=km '.(int)$km_T1_diag.' → T2=km '.(int)$km_T;
-                } else {
-                    $r['relacion_km'] = 'BLOQUE';
-                    $r['estado_rel']  = 'OK';
-                    $r['motivo_mal']  = 'Bloque T1=km '.(int)$km_T1_diag.' → T2=km '.(int)$km_T;
-                }
+                continue;
+            }
+
+            // Tanqueo completo: verificar lógica de bloque
+            // Correcto: km_sal > T1  AND  km_ret <= T2 + MARGEN
+            $en_bloque = ($km_s > $km_T1) && ($km_r <= $km_T + $MARGEN);
+
+            if($en_bloque){
+                $r['relacion_km'] = $en_curso ? 'BLOQUE (EN CURSO)' : 'BLOQUE';
+                $r['estado_rel']  = 'OK';
+                $r['motivo_mal']  = 'T1=km '.(int)$km_T1.' → T2=km '.(int)$km_T;
             } elseif($km_r > $km_T + $MARGEN && $km_s <= $km_T){
-                // km_T dentro del viaje pero km_ret pasó al siguiente bloque
-                // → Le pertenece al siguiente tanqueo
-                $r['relacion_km'] = 'MAL-BLOQUE';
-                $r['estado_rel']  = 'MAL';
-                $r['motivo_mal']  = 'km_ret('.(int)$km_r.') superó T2('.(int)$km_T.')+4=('.(int)($km_T+$MARGEN).'). Este viaje pertenece al siguiente tanqueo.';
+                $r['relacion_km'] = 'MAL-BLOQUE'; $r['estado_rel'] = 'MAL';
+                $r['motivo_mal']  = 'km_ret('.(int)$km_r.') > T2+'.$MARGEN.'=('.(int)($km_T+$MARGEN).'). Pertenece al siguiente tanqueo.';
+            } elseif($km_T < $km_s && $km_r > $km_T + $MARGEN){
+                $r['relacion_km'] = 'MAL-ANTERIOR'; $r['estado_rel'] = 'MAL';
+                $r['motivo_mal']  = 'T2=km '.(int)$km_T.' anterior a salida('.(int)$km_s.') y km_ret('.(int)$km_r.') no cierra este bloque. Le pertenece al siguiente tanqueo.';
             } else {
-                // Tanqueo fuera del bloque del viaje completamente
-                $r['relacion_km'] = 'FUERA DE BLOQUE';
-                $r['estado_rel']  = 'MAL';
-                $r['motivo_mal']  = 'Bloque esperado: T1='.(int)$km_T1_diag.'→T2='.(int)$km_T.'. Viaje: '.(int)$km_s.'→'.(int)$km_r.'. No coincide.';
+                $r['relacion_km'] = 'FUERA DE BLOQUE'; $r['estado_rel'] = 'MAL';
+                $r['motivo_mal']  = 'T1='.(int)$km_T1.' T2='.(int)$km_T.' Viaje:'.(int)$km_s.'→'.(int)$km_r;
             }
         }
         unset($r);
         jout($rows);
-    }
-
-    // POST /api/compras/recalcular-asignaciones
-    // Re-evalúa TODAS las relaciones en detalle_consumo y corrige las incorrectas
-    // Usa la lógica unificada: km_salida <= km_T <= km_retorno + MARGEN
-    if($r1==='recalcular-asignaciones'&&$m==='POST'){
-        $d = jbody();
-        $solo_erroneos = (bool)($d['solo_erroneos'] ?? true);
-        $MARGEN = 4;
-
-        // Obtener todas las relaciones existentes con datos completos
-        $relaciones = qall(
-            "SELECT dc.id_detalle, dc.id_control, dc.id_combustible,
-                    cf.id_unidad, cf.km_salida, cf.km_retorno, cf.km_recorrido,
-                    cc.km_vehiculo AS km_T, cc.tanqueo,
-                    cc.tipo_combustible
-             FROM detalle_consumo dc
-             JOIN control_flota cf ON dc.id_control = cf.id_control
-             JOIN unidad u ON cf.id_unidad = u.id_unidad AND u.tipo_unidad = 'FLOTA'
-             LEFT JOIN compra_combustible cc ON dc.id_combustible = cc.id_combustible
-             WHERE dc.id_combustible IS NOT NULL
-             ORDER BY cf.id_unidad, cf.km_salida"
-        );
-
-        $corregidos = 0;
-        $correctos  = 0;
-        $eliminados = 0;
-
-        foreach($relaciones as $rel){
-            $km_s = (float)($rel['km_salida']  ?? 0);
-            $km_r = (float)($rel['km_retorno'] ?? 0);
-            $km_T = (float)($rel['km_T']       ?? 0);
-
-            if($km_r <= 0 || $km_s <= 0 || $km_T <= 0){ $correctos++; continue; }
-
-            // LÓGICA DE BLOQUE
-            $km_T1_rec = (float)(qval(
-                "SELECT MAX(km_vehiculo) FROM compra_combustible
-                 WHERE id_unidad=? AND tipo_combustible='PETROLEO'
-                   AND tanqueo=1 AND km_vehiculo IS NOT NULL AND km_vehiculo < ?",
-                [$rel['id_unidad'], $km_T]
-            ) ?? 0);
-            $es_tanq_rec = (int)($rel['tanqueo'] ?? 1) === 1;
-            $es_correcto = $es_tanq_rec
-                ? ($km_s > $km_T1_rec && $km_r <= $km_T + $MARGEN)
-                : ($km_T >= $km_s && $km_T <= $km_r);
-
-            // Para ANTERIOR: km_T < km_salida pero es el más reciente antes de la salida
-            // Con lógica de bloque, un ANTERIOR nunca es correcto si km_ret > km_T + MARGEN
-            // Solo es correcto si: km_sal > km_T1 AND km_ret <= km_T + MARGEN
-            // (ya calculado en $es_correcto arriba)
-
-            if($es_correcto){
-                // Determinar etiqueta descriptiva
-                if($es_tanq_diag && $km_s > $km_T1_diag && $km_r <= $km_T + $MARGEN){
-                    $r['relacion_km'] = 'BLOQUE';
-                    $r['estado_rel']  = 'OK';
-                    $r['motivo_mal']  = 'Viaje entre T1(km '.(int)$km_T1_diag.') y T2(km '.(int)$km_T.'). Correcto.';
-                } else {
-                    $r['relacion_km'] = 'OK';
-                    $r['estado_rel']  = 'OK';
-                    $r['motivo_mal']  = '';
-                }
-                $correctos++;
-                continue;
-            }
-
-            // Relación incorrecta — buscar la compra correcta para este viaje
-            // Primero intentar con la lógica unificada
-            // Buscar el tanqueo T2 correcto para este viaje usando lógica de bloque
-            $correcta = qone(
-                "SELECT cc.id_combustible
-                 FROM compra_combustible cc
-                 WHERE cc.id_unidad=? AND cc.tipo_combustible='PETROLEO' AND cc.tanqueo=1
-                   AND cc.km_vehiculo IS NOT NULL
-                   AND cc.km_vehiculo >= ?
-                   AND ? > COALESCE((
-                       SELECT MAX(cx.km_vehiculo) FROM compra_combustible cx
-                       WHERE cx.id_unidad=cc.id_unidad AND cx.tipo_combustible='PETROLEO'
-                         AND cx.tanqueo=1 AND cx.km_vehiculo < cc.km_vehiculo
-                   ), 0)
-                   AND ? <= cc.km_vehiculo + ?
-                 ORDER BY cc.km_vehiculo ASC LIMIT 1",
-                [$rel['id_unidad'], $km_r - $MARGEN, $km_s, $km_r, $MARGEN]
-            );
-
-            if($correcta && $correcta['id_combustible'] != $rel['id_combustible']){
-                qrows('UPDATE detalle_consumo SET id_combustible=? WHERE id_detalle=?',
-                    [$correcta['id_combustible'], $rel['id_detalle']]);
-                $corregidos++;
-            } elseif(!$correcta){
-                // Sin compra válida para este viaje → NULL
-                qrows('UPDATE detalle_consumo SET id_combustible=NULL WHERE id_detalle=?',
-                    [$rel['id_detalle']]);
-                $eliminados++;
-            } else {
-                $correctos++;
-            }
-
-            // Si la compra actual (incorrecta) tiene un viaje correcto al que pertenece,
-            // crear/actualizar esa relación también
-            if(!$es_correcto && $km_T > 0 && $km_s > 0 && $km_r > 0){
-                // Buscar el viaje donde sí pertenece esta compra
-                $viaje_correcto = qone(
-                    "SELECT id_control, km_recorrido FROM control_flota
-                     WHERE id_unidad=? AND km_salida <= ? AND km_retorno + ? >= ?
-                       AND km_retorno > 0
-                     ORDER BY km_salida DESC LIMIT 1",
-                    [$rel['id_unidad'], $km_T, $MARGEN, $km_T]
-                );
-                if($viaje_correcto && $viaje_correcto['id_control'] != $rel['id_control']){
-                    $ya = (int)(qval(
-                        'SELECT COUNT(*) FROM detalle_consumo WHERE id_control=? AND id_combustible=?',
-                        [$viaje_correcto['id_control'], $rel['id_combustible']]
-                    ) ?? 0);
-                    if(!$ya){
-                        // Asignar al viaje correcto
-                        $fila_null = qone('SELECT id_detalle FROM detalle_consumo WHERE id_control=? AND id_combustible IS NULL LIMIT 1',
-                            [$viaje_correcto['id_control']]);
-                        if($fila_null){
-                            qrows('UPDATE detalle_consumo SET id_combustible=? WHERE id_detalle=?',
-                                [$rel['id_combustible'], $fila_null['id_detalle']]);
-                        } else {
-                            qexec('INSERT INTO detalle_consumo(id_combustible,id_control,km_recorridos)VALUES(?,?,?)',
-                                [$rel['id_combustible'], $viaje_correcto['id_control'], $viaje_correcto['km_recorrido']]);
-                        }
-                    }
-                }
-            }
-        }
-
-        jout([
-            'ok'         => true,
-            'total'      => count($relaciones),
-            'correctos'  => $correctos,
-            'corregidos' => $corregidos,
-            'sin_match'  => $eliminados,
-            'mensaje'    => $corregidos . ' asignaciones corregidas, ' . $eliminados . ' sin compra válida (quedaron vacías)',
-        ]);
     }
 
     // POST /api/compras/limpiar-nulos — elimina filas de detalle_consumo sin combustible
