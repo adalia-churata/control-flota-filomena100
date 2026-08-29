@@ -509,13 +509,30 @@ if($r0==='compras'){
             $es_tanq = (int)($r['tanqueo'] ?? 1) === 1;
 
             if(!$es_tanq){
-                // Emergencia: km_T debe estar dentro del trayecto
-                if($km_T >= $km_s && ($km_r===0.0 || $km_T <= $km_r)){
+                // Emergencia (tanqueo=0): correcta si el viaje está en el mismo bloque
+                // El bloque se define por T2 = siguiente tanqueo >= km_E
+                // No importa si km_E está fuera del trayecto exacto del viaje
+                $km_T2_emg = (float)(qval(
+                    "SELECT MIN(km_vehiculo) FROM compra_combustible
+                     WHERE id_unidad=? AND tipo_combustible='PETROLEO'
+                       AND tanqueo=1 AND km_vehiculo IS NOT NULL AND km_vehiculo >= ?",
+                    [$r['id_unidad'], $km_T]
+                ) ?? 0);
+                $km_T1_emg = $km_T2_emg > 0 ? (float)(qval(
+                    "SELECT MAX(km_vehiculo) FROM compra_combustible
+                     WHERE id_unidad=? AND tipo_combustible='PETROLEO'
+                       AND tanqueo=1 AND km_vehiculo IS NOT NULL AND km_vehiculo < ?",
+                    [$r['id_unidad'], $km_T2_emg]
+                ) ?? 0) : 0;
+                $viaje_en_bloque_emg = $km_T2_emg > 0
+                    && ($km_s >= $km_T1_emg - $MARGEN)
+                    && ($km_r <= $km_T2_emg + $MARGEN);
+                if($viaje_en_bloque_emg){
                     $r['relacion_km'] = 'EMERGENCIA'; $r['estado_rel'] = 'OK';
-                    $r['motivo_mal']  = 'Compra parcial dentro del trayecto';
+                    $r['motivo_mal']  = 'Compra parcial del bloque T1=km '.(int)$km_T1_emg.'→T2=km '.(int)$km_T2_emg;
                 } else {
                     $r['relacion_km'] = 'EMG-FUERA'; $r['estado_rel'] = 'MAL';
-                    $r['motivo_mal']  = 'Emergencia km '.(int)$km_T.' fuera del trayecto ('.(int)$km_s.'→'.(int)$km_r.')';
+                    $r['motivo_mal']  = 'Emergencia km '.(int)$km_T.' no pertenece al bloque de este viaje ('.(int)$km_s.'→'.(int)$km_r.')';
                 }
                 continue;
             }
@@ -612,8 +629,57 @@ if($r0==='compras'){
                 $eliminados++;
             } else { $correctos++; }
         }
+        // Paso 2: propagar emergencias a todos los viajes de su bloque
+        $emergencias_all = qall(
+            "SELECT cc.id_combustible, cc.km_vehiculo AS km_E, cc.id_unidad
+             FROM compra_combustible cc
+             JOIN unidad u ON cc.id_unidad=u.id_unidad AND u.tipo_unidad='FLOTA'
+             WHERE cc.tipo_combustible='PETROLEO' AND cc.tanqueo=0
+               AND cc.km_vehiculo IS NOT NULL"
+        );
+        $emg_propagadas = 0;
+        foreach($emergencias_all as $emg){
+            $id_u_emg   = (int)$emg['id_unidad'];
+            $km_E       = (float)$emg['km_E'];
+            $id_comb_emg= (int)$emg['id_combustible'];
+            // Encontrar el bloque de esta emergencia
+            $t2_e = qone(
+                "SELECT km_vehiculo AS km_T2,
+                        COALESCE((SELECT MAX(cx.km_vehiculo) FROM compra_combustible cx
+                                  WHERE cx.id_unidad=? AND cx.tipo_combustible='PETROLEO'
+                                    AND cx.tanqueo=1 AND cx.km_vehiculo IS NOT NULL
+                                    AND cx.km_vehiculo < cc.km_vehiculo),0) AS km_T1
+                 FROM compra_combustible cc
+                 WHERE cc.id_unidad=? AND cc.tipo_combustible='PETROLEO' AND cc.tanqueo=1
+                   AND cc.km_vehiculo IS NOT NULL AND cc.km_vehiculo >= ?
+                 ORDER BY cc.km_vehiculo ASC LIMIT 1",
+                [$id_u_emg, $id_u_emg, $km_E]
+            );
+            if(!$t2_e) continue;
+            $km_T2_e = (float)$t2_e['km_T2'];
+            $km_T1_e = (float)$t2_e['km_T1'];
+            // Todos los viajes del bloque que no tienen esta emergencia asignada
+            $viajes_bloque_e = qall(
+                "SELECT cf.id_control, cf.km_recorrido
+                 FROM control_flota cf
+                 WHERE cf.id_unidad=? AND cf.km_salida>=?-? AND cf.km_retorno<=?+?
+                   AND cf.km_retorno>0
+                   AND NOT EXISTS (
+                       SELECT 1 FROM detalle_consumo dc
+                       WHERE dc.id_control=cf.id_control AND dc.id_combustible=?
+                   )",
+                [$id_u_emg, $km_T1_e, $MARGEN, $km_T2_e, $MARGEN, $id_comb_emg]
+            );
+            foreach($viajes_bloque_e as $vb){
+                qexec('INSERT INTO detalle_consumo(id_combustible,id_control,km_recorridos)VALUES(?,?,?)',
+                    [$id_comb_emg, (int)$vb['id_control'], $vb['km_recorrido']]);
+                $emg_propagadas++;
+            }
+        }
+
         jout(['ok'=>true,'total'=>count($relaciones),'correctos'=>$correctos,'corregidos'=>$corregidos,'sin_match'=>$eliminados,
-              'mensaje'=>$corregidos.' corregidas, '.$eliminados.' sin compra válida (quedaron vacías)']);
+              'emergencias_propagadas'=>$emg_propagadas,
+              'mensaje'=>$corregidos.' corregidas, '.$eliminados.' sin compra válida, '.$emg_propagadas.' emergencias propagadas']);
     }
 
     // POST /api/compras/limpiar-nulos — elimina filas de detalle_consumo sin combustible

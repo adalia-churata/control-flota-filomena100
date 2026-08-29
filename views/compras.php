@@ -1081,8 +1081,9 @@ async function recalcularAsignaciones() {
     var r = await api('/api/compras/recalcular-asignaciones', {method:'POST', body:JSON.stringify({solo_erroneos:true})});
     toast(
       '✓ ' + r.corregidos + ' corregidas · ' +
+      (r.emergencias_propagadas||0) + ' emergencias propagadas · ' +
       r.correctos + ' correctas · ' +
-      r.sin_match + ' sin compra válida (quedaron vacías) · ' +
+      r.sin_match + ' sin compra válida · ' +
       r.total + ' revisadas',
       'ok'
     );
@@ -1264,8 +1265,9 @@ async function recalcularAsignaciones() {
     var r = await api('/api/compras/recalcular-asignaciones', {method:'POST', body:JSON.stringify({solo_erroneos:true})});
     toast(
       '✓ ' + r.corregidos + ' corregidas · ' +
+      (r.emergencias_propagadas||0) + ' emergencias propagadas · ' +
       r.correctos + ' correctas · ' +
-      r.sin_match + ' sin compra válida (quedaron vacías) · ' +
+      r.sin_match + ' sin compra válida · ' +
       r.total + ' revisadas',
       'ok'
     );
