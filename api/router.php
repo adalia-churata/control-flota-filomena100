@@ -624,14 +624,19 @@ if($r0==='compras'){
 
     if($r1==='reasignar-vacios'&&$m==='POST'){
         $d=jbody();
-        $solo_vacios=isset($d['solo_vacios'])?(bool)$d['solo_vacios']:true;
         $MARGEN=4;
+        // Viajes sin combustible real asignado (tiene fila NULL o sin fila)
         $viajes=qall(
-            "SELECT cf.id_control,cf.id_unidad,cf.km_salida,cf.km_retorno
+            "SELECT cf.id_control,cf.id_unidad,cf.km_salida,cf.km_retorno,cf.km_recorrido
              FROM control_flota cf
              JOIN unidad u ON cf.id_unidad=u.id_unidad
-             WHERE cf.km_salida IS NOT NULL AND cf.km_salida>0
-               AND u.tipo_unidad='FLOTA'
+             WHERE u.tipo_unidad='FLOTA'
+               AND cf.km_salida IS NOT NULL AND cf.km_salida>0
+               AND cf.km_retorno IS NOT NULL AND cf.km_retorno>0
+               AND NOT EXISTS (
+                   SELECT 1 FROM detalle_consumo dc2
+                   WHERE dc2.id_control=cf.id_control AND dc2.id_combustible IS NOT NULL
+               )
              ORDER BY cf.fecha DESC,cf.id_control DESC LIMIT 500"
         );
         $asignados=0;$saltados=0;
@@ -639,31 +644,55 @@ if($r0==='compras'){
             $id_ctrl=(int)$v['id_control'];
             $id_u=(int)$v['id_unidad'];
             $km_sal=(float)$v['km_salida'];
-            $km_ret=(float)($v['km_retorno']??0);
-            $tiene=(int)(qval('SELECT COUNT(*) FROM detalle_consumo WHERE id_control=?',[$id_ctrl])??0);
-            if($solo_vacios&&$tiene>0){$saltados++;continue;}
-            $candidatas=qall(
-                "SELECT id_combustible,km_vehiculo FROM compra_combustible
-                 WHERE id_unidad=? AND tipo_combustible='PETROLEO'
-                   AND tanqueo=1 AND km_vehiculo IS NOT NULL AND km_vehiculo>=?
-                 ORDER BY km_vehiculo ASC",
-                [$id_u,$km_sal]
+            $km_ret=(float)$v['km_retorno'];
+
+            // Buscar T2: tanqueo cuyo bloque contiene este viaje
+            // km_sal >= T1-MARGEN AND km_ret <= T2+MARGEN
+            $t2=qone(
+                "SELECT cc.id_combustible, cc.km_vehiculo AS km_T2,
+                        COALESCE((
+                            SELECT MAX(cx.km_vehiculo) FROM compra_combustible cx
+                            WHERE cx.id_unidad=cc.id_unidad AND cx.tipo_combustible='PETROLEO'
+                              AND cx.tanqueo=1 AND cx.km_vehiculo IS NOT NULL
+                              AND cx.km_vehiculo < cc.km_vehiculo
+                        ),0) AS km_T1
+                 FROM compra_combustible cc
+                 WHERE cc.id_unidad=? AND cc.tipo_combustible='PETROLEO' AND cc.tanqueo=1
+                   AND cc.km_vehiculo IS NOT NULL
+                   AND cc.km_vehiculo >= ? - ?
+                 ORDER BY cc.km_vehiculo ASC LIMIT 10",
+                [$id_u, $km_ret, $MARGEN]
             );
-            $mejor=null;
-            foreach($candidatas as $cp){
-                $dif=$km_ret>0?$km_ret-(float)$cp['km_vehiculo']:-1;
-                if($dif<=$MARGEN){$mejor=$cp;break;}
+
+            if(!$t2){$saltados++;continue;}
+
+            $km_T2=(float)$t2['km_T2'];
+            $km_T1=(float)$t2['km_T1'];
+
+            if(!($km_sal >= $km_T1 - $MARGEN && $km_ret <= $km_T2 + $MARGEN)){
+                $saltados++;continue;
             }
-            if(!$mejor){$saltados++;continue;}
-            // Solo asignar si no tiene ningún combustible real asignado
-            $tiene_real=(int)(qval('SELECT COUNT(*) FROM detalle_consumo WHERE id_control=? AND id_combustible IS NOT NULL',[$id_ctrl])??0);
-            if($tiene_real>0){$saltados++;continue;}
-            // Actualizar la fila NULL existente o insertar nueva
+
             $fila_null=qone('SELECT id_detalle FROM detalle_consumo WHERE id_control=? AND id_combustible IS NULL LIMIT 1',[$id_ctrl]);
             if($fila_null){
-                qrows('UPDATE detalle_consumo SET id_combustible=? WHERE id_detalle=?',[$mejor['id_combustible'],$fila_null['id_detalle']]);
+                qrows('UPDATE detalle_consumo SET id_combustible=?,km_recorridos=? WHERE id_detalle=?',
+                    [$t2['id_combustible'],$v['km_recorrido'],$fila_null['id_detalle']]);
             } else {
-                qexec('INSERT INTO detalle_consumo(id_control,id_combustible) VALUES(?,?)',[$id_ctrl,$mejor['id_combustible']]);
+                qexec('INSERT INTO detalle_consumo(id_control,id_combustible,km_recorridos)VALUES(?,?,?)',
+                    [$id_ctrl,$t2['id_combustible'],$v['km_recorrido']]);
+            }
+
+            // También asignar emergencias del bloque
+            $emergencias=qall(
+                "SELECT id_combustible FROM compra_combustible
+                 WHERE id_unidad=? AND tipo_combustible='PETROLEO' AND tanqueo=0
+                   AND km_vehiculo IS NOT NULL AND km_vehiculo > ? AND km_vehiculo <= ?",
+                [$id_u,$km_T1,$km_T2]
+            );
+            foreach($emergencias as $emg){
+                $ex=(int)(qval('SELECT COUNT(*) FROM detalle_consumo WHERE id_control=? AND id_combustible=?',[$id_ctrl,$emg['id_combustible']])??0);
+                if(!$ex) qexec('INSERT INTO detalle_consumo(id_control,id_combustible,km_recorridos)VALUES(?,?,?)',
+                    [$id_ctrl,$emg['id_combustible'],$v['km_recorrido']]);
             }
             $asignados++;
         }
