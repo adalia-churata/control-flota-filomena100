@@ -539,7 +539,8 @@ if($r0==='compras'){
 
             // Tanqueo completo: verificar lógica de bloque
             // Correcto: km_sal > T1  AND  km_ret <= T2 + MARGEN
-            $en_bloque = ($km_s >= $km_T1 - $MARGEN) && ($km_r <= $km_T + $MARGEN);
+            $MARGEN_SAL=10; // margen más amplio para km_salida vs T1
+            $en_bloque = ($km_s >= $km_T1 - $MARGEN_SAL) && ($km_r <= $km_T + $MARGEN);
 
             if($en_bloque){
                 $r['relacion_km'] = $en_curso ? 'BLOQUE (EN CURSO)' : 'BLOQUE';
@@ -682,6 +683,20 @@ if($r0==='compras'){
               'mensaje'=>$corregidos.' corregidas, '.$eliminados.' sin compra válida, '.$emg_propagadas.' emergencias propagadas']);
     }
 
+    // POST /api/compras/limpiar-duplicados-nulos
+    // Elimina filas NULL cuando el viaje ya tiene otra fila con combustible real
+    if($r1==='limpiar-duplicados-nulos'&&$m==='POST'){
+        $n=qrows(
+            "DELETE dc FROM detalle_consumo dc
+             WHERE dc.id_combustible IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM detalle_consumo dc2
+                   WHERE dc2.id_control=dc.id_control AND dc2.id_combustible IS NOT NULL
+               )"
+        );
+        jout(['ok'=>true,'eliminadas'=>$n]);
+    }
+
     // POST /api/compras/limpiar-nulos — elimina filas de detalle_consumo sin combustible
     if($r1==='limpiar-nulos'&&$m==='POST'){
         $n = qrows('DELETE FROM detalle_consumo WHERE id_combustible IS NULL');
@@ -775,10 +790,16 @@ if($r0==='compras'){
         $km=$cf['km_recorrido']??null;
 
         if($accion==='agregar'&&$id_comb){
-            // Agregar un combustible adicional al viaje (sin borrar los existentes)
+            // Agregar combustible: si hay fila NULL, actualizarla; si no, insertar nueva
             $existe=qval('SELECT COUNT(*) FROM detalle_consumo WHERE id_control=? AND id_combustible=?',[$id_ctrl,$id_comb]);
             if(!(int)$existe){
-                qexec('INSERT INTO detalle_consumo(id_combustible,id_control,km_recorridos)VALUES(?,?,?)',[$id_comb,$id_ctrl,$km]);
+                // Reutilizar fila NULL si existe (evita duplicados)
+                $fila_null=qone('SELECT id_detalle FROM detalle_consumo WHERE id_control=? AND id_combustible IS NULL LIMIT 1',[$id_ctrl]);
+                if($fila_null){
+                    qrows('UPDATE detalle_consumo SET id_combustible=?,km_recorridos=? WHERE id_detalle=?',[$id_comb,$km,$fila_null['id_detalle']]);
+                } else {
+                    qexec('INSERT INTO detalle_consumo(id_combustible,id_control,km_recorridos)VALUES(?,?,?)',[$id_comb,$id_ctrl,$km]);
+                }
             }
         } elseif($accion==='quitar'&&$id_comb){
             // Quitar solo este combustible del viaje
