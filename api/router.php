@@ -522,7 +522,7 @@ if($r0==='compras'){
 
             // Tanqueo completo: verificar lógica de bloque
             // Correcto: km_sal > T1  AND  km_ret <= T2 + MARGEN
-            $en_bloque = ($km_s > $km_T1) && ($km_r <= $km_T + $MARGEN);
+            $en_bloque = ($km_s >= $km_T1 - $MARGEN) && ($km_r <= $km_T + $MARGEN);
 
             if($en_bloque){
                 $r['relacion_km'] = $en_curso ? 'BLOQUE (EN CURSO)' : 'BLOQUE';
@@ -531,7 +531,7 @@ if($r0==='compras'){
             } elseif($km_r > $km_T + $MARGEN && $km_s <= $km_T){
                 $r['relacion_km'] = 'MAL-BLOQUE'; $r['estado_rel'] = 'MAL';
                 $r['motivo_mal']  = 'km_ret('.(int)$km_r.') > T2+'.$MARGEN.'=('.(int)($km_T+$MARGEN).'). Pertenece al siguiente tanqueo.';
-            } elseif($km_T < $km_s && $km_r > $km_T + $MARGEN){
+            } elseif($km_T < $km_s - $MARGEN && $km_r > $km_T + $MARGEN){
                 $r['relacion_km'] = 'MAL-ANTERIOR'; $r['estado_rel'] = 'MAL';
                 $r['motivo_mal']  = 'T2=km '.(int)$km_T.' anterior a salida('.(int)$km_s.') y km_ret('.(int)$km_r.') no cierra este bloque. Le pertenece al siguiente tanqueo.';
             } else {
@@ -573,7 +573,7 @@ if($r0==='compras'){
             $es_tanq=(int)($rel['tanqueo']??1)===1;
             // Verificar lógica de bloque
             $ok = $es_tanq
-                ? ($km_s>$km_T1 && $km_r<=$km_T+$MARGEN)
+                ? ($km_s>=$km_T1-$MARGEN && $km_r<=$km_T+$MARGEN)
                 : ($km_T>=$km_s && $km_T<=$km_r);
             if($ok){$correctos++;continue;}
             // Buscar compra correcta para este viaje usando lógica de bloque
@@ -1175,7 +1175,11 @@ if($r0==='mantenimiento'){
     if($r1==='plan-tareas'){
         $id_u=gget('id_unidad');
         if(!$id_u)jout([]);
-        jout(qall('SELECT id_plan,tarea,frecuencia_km,frecuencia_horas FROM plan_mantenimiento WHERE id_unidad=? ORDER BY tarea',[$id_u]));
+        jout(qall(
+            'SELECT id_plan,tarea,frecuencia_km,frecuencia_horas,detalle_trabajo
+             FROM plan_mantenimiento WHERE id_unidad=? ORDER BY COALESCE(frecuencia_km,frecuencia_horas) ASC',
+            [$id_u]
+        ));
     }
     if($r1==='historial'&&$m==='GET'){
         $sql='SELECT hm.*,u.placa,u.tipo_unidad FROM historial_mantenimiento hm JOIN unidad u ON hm.id_unidad=u.id_unidad WHERE 1=1';
@@ -1930,9 +1934,9 @@ function run_assignment(int $id_combustible): array {
                  WHERE cf.id_unidad  = ?
                    AND cf.km_salida  IS NOT NULL
                    AND cf.km_retorno IS NOT NULL AND cf.km_retorno > 0
-                   AND cf.km_salida  > ?
+                   AND cf.km_salida  >= ? - ?
                    AND cf.km_retorno <= ? + ?",
-                [$c['id_unidad'], $km_T1, $km_T, $margen]
+                [$c['id_unidad'], $km_T1, $margen, $km_T, $margen]
             );
 
             foreach($viajes_bloque as $v){
@@ -2064,7 +2068,7 @@ function run_assignment_viaje(int $id_ctrl, int $id_u, float $km_sal, float $km_
                AND cc.tanqueo=1 AND cc.km_vehiculo IS NOT NULL
                AND cc.km_vehiculo >= ?
              ORDER BY cc.km_vehiculo ASC",
-            [$id_u, $id_u, $km_ret - $MARGEN]  // T2 >= km_retorno - MARGEN
+            [$id_u, $id_u, $km_ret - $MARGEN, $km_sal, $MARGEN]  // T2 >= km_retorno - MARGEN
         );
 
         foreach($tanqueos_candidatos as $t){
