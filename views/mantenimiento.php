@@ -117,7 +117,7 @@ $hoy = date('Y-m-d');
         </div>
         <div class="fgroup">
           <label>Unidad *</label>
-          <select id="hist-unidad-modal">
+          <select id="hist-unidad-modal" onchange="onUnidadModalChange()">
             <option value="">Seleccionar…</option>
           </select>
         </div>
@@ -125,9 +125,23 @@ $hoy = date('Y-m-d');
 
       <div class="fgroup">
         <label>Tipo de mantenimiento / Trabajo *</label>
-        <input type="text" id="hist-tipo" placeholder="Ej: CAMBIO DE ACEITE, LLANTAS, SOLDADURA…"
+        <!-- Select para PREVENTIVO (carga tareas del plan) -->
+        <select id="hist-tipo-select" style="display:none" onchange="onTareaPlanChange(this.value)">
+          <option value="">— Seleccionar tarea del plan —</option>
+        </select>
+        <!-- Input libre para CORRECTIVO/OTRO -->
+        <input type="text" id="hist-tipo" placeholder="Ej: LLANTAS, SOLDADURA, PARCHE…"
                list="hist-tipo-list" autocomplete="off"/>
-        <datalist id="hist-tipo-list"></datalist>
+        <datalist id="hist-tipo-list">
+          <option value="CAMBIO DE ACEITE">
+          <option value="CAMBIO DE FILTROS">
+          <option value="CAMBIO DE LLANTAS">
+          <option value="REPARACIÓN DE LLANTAS">
+          <option value="CAMBIO DE FRENOS">
+          <option value="SOLDADURA">
+          <option value="MUELLE">
+          <option value="BATERÍA">
+        </datalist>
         <span class="hint" id="hist-tipo-hint"></span>
       </div>
 
@@ -543,6 +557,93 @@ function renderHistorial() {
 }
 
 // ── Modal historial ───────────────────────────────────────────
+var _tareasPlanCache = [];
+
+async function cargarTareasPlan(id_unidad) {
+  var cat       = document.getElementById('hist-categoria').value;
+  var tipoInput = document.getElementById('hist-tipo');
+  var tipoSel   = document.getElementById('hist-tipo-select');
+  var hint      = document.getElementById('hist-tipo-hint');
+
+  if(cat !== 'PREVENTIVO' || !id_unidad) {
+    // Mostrar input libre, ocultar select
+    tipoSel.style.display = 'none';
+    tipoInput.style.display = '';
+    hint.textContent = '';
+    return;
+  }
+
+  try {
+    _tareasPlanCache = await api('/api/mantenimiento/plan-tareas?id_unidad=' + id_unidad);
+
+    if(!_tareasPlanCache.length) {
+      tipoSel.style.display = 'none';
+      tipoInput.style.display = '';
+      hint.textContent = 'Esta unidad no tiene plan preventivo configurado.';
+      hint.style.color = 'var(--warn)';
+      return;
+    }
+
+    // Poblar y mostrar el select de tareas del plan
+    tipoSel.innerHTML = '<option value="">— Seleccionar tarea del plan —</option>';
+    _tareasPlanCache.forEach(function(t) {
+      var freq = t.frecuencia_km
+        ? 'Cada ' + fmt.num(t.frecuencia_km,0) + ' km'
+        : 'Cada ' + fmt.num(t.frecuencia_horas,1) + ' h';
+      tipoSel.insertAdjacentHTML('beforeend',
+        '<option value="' + t.id_plan + '">' + t.tarea + ' — ' + freq + '</option>');
+    });
+
+    tipoSel.style.display = '';
+    tipoInput.style.display = 'none';
+    tipoInput.value = '';
+
+    // Si solo hay una tarea, seleccionarla automáticamente
+    if(_tareasPlanCache.length === 1){
+      tipoSel.value = _tareasPlanCache[0].id_plan;
+      onTareaPlanChange(_tareasPlanCache[0].id_plan);
+    }
+
+    hint.textContent = _tareasPlanCache.length + ' tarea(s) del plan preventivo para esta unidad';
+    hint.style.color = 'var(--ok)';
+
+  } catch(e) {
+    console.error('Error cargando tareas del plan:', e);
+    hint.textContent = 'Error cargando tareas del plan';
+    hint.style.color = 'var(--danger)';
+  }
+}
+
+function onTareaPlanChange(id_plan_sel) {
+  if(!id_plan_sel) return;
+  var tarea = _tareasPlanCache.find(function(t){ return t.id_plan == id_plan_sel; });
+  if(!tarea) return;
+
+  // Rellenar tipo de mantenimiento con la tarea
+  var tipoInput = document.getElementById('hist-tipo');
+  tipoInput.value = tarea.tarea;
+
+  // Rellenar descripción con el detalle del plan si existe
+  var descEl = document.getElementById('hist-desc');
+  if(tarea.detalle_trabajo && !descEl.value){
+    descEl.value = tarea.detalle_trabajo;
+  }
+
+  // Guardar id_plan en campo oculto
+  var ipEl = document.getElementById('hist-id-plan');
+  if(!ipEl){
+    document.getElementById('hist-tipo').insertAdjacentHTML('afterend',
+      '<input type="hidden" id="hist-id-plan"/>');
+  }
+  document.getElementById('hist-id-plan').value = id_plan_sel;
+}
+
+function onUnidadModalChange() {
+  var uid = document.getElementById('hist-unidad-modal').value;
+  var cat = document.getElementById('hist-categoria').value;
+  if(uid && cat === 'PREVENTIVO') cargarTareasPlan(uid);
+}
+
 function calcCostoTotal() {
   var r = parseFloat(document.getElementById('hist-c-rep').value)||0;
   var m = parseFloat(document.getElementById('hist-c-mo').value)||0;
@@ -601,11 +702,13 @@ async function abrirModalHistorial(id, categoria) {
 
 async function guardarHistorial() {
   var id = document.getElementById('hist-id').value;
+  var idPlanEl = document.getElementById('hist-id-plan');
   var payload = {
     id_unidad:           document.getElementById('hist-unidad-modal').value,
     fecha_ejecucion:     document.getElementById('hist-fecha').value,
     tipo_mantenimiento:  document.getElementById('hist-tipo').value,
     tipo_mant_categoria: document.getElementById('hist-categoria').value,
+    id_plan:             idPlanEl ? (idPlanEl.value || null) : null,
     km_registro:         document.getElementById('hist-km').value || null,
     horometro_registro:  document.getElementById('hist-horom').value || null,
     descripcion_trabajo: document.getElementById('hist-desc').value,
@@ -624,6 +727,13 @@ async function guardarHistorial() {
       await api('/api/mantenimiento/historial',{method:'POST',body:JSON.stringify(payload)});
       toast('Registro guardado','ok');
     }
+    // Limpiar select de tareas
+    var sel = document.getElementById('hist-tipo-select');
+    if(sel){ sel.style.display='none'; sel.innerHTML=''; }
+    var tipoInput = document.getElementById('hist-tipo');
+    tipoInput.style.display = '';
+    var ipEl = document.getElementById('hist-id-plan');
+    if(ipEl) ipEl.value = '';
     cerrarModal('modal-historial');
     cargarHistorial();
     cargarAlertas();
