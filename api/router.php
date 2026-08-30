@@ -1348,7 +1348,8 @@ if($r0==='mantenimiento'){
 
         // Último historial por id_plan (relación directa)
         // Si no tiene id_plan, fallback por tipo_mantenimiento+unidad
-        $planHistorial=array_column(qall(
+        // Último historial por id_plan — mapa indexado por id_plan
+        $planRows=qall(
             "SELECT hm.id_plan,
                     hm.id_unidad,
                     hm.km_registro    AS km_ult,
@@ -1363,10 +1364,9 @@ if($r0==='mantenimiento'){
                  GROUP BY id_plan
              ) ult ON hm.id_mantenimiento=ult.max_id
              WHERE hm.id_plan IS NOT NULL"
-        ),'id_plan',null);
-        // Convertir a map por id_plan
+        );
         $planMap=[];
-        foreach($planHistorial as $ph){ $planMap[$ph['id_plan']]=$ph; }
+        foreach($planRows as $ph){ $planMap[(int)$ph['id_plan']]=$ph; }
 
         // Fallback: último por tipo_mantenimiento normalizado (para registros sin id_plan)
         $fallbackRows=qall(
