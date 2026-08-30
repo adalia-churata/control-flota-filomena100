@@ -2184,7 +2184,7 @@ function run_assignment_viaje(int $id_ctrl, int $id_u, float $km_sal, float $km_
                AND cc.tanqueo=1 AND cc.km_vehiculo IS NOT NULL
                AND cc.km_vehiculo >= ?
              ORDER BY cc.km_vehiculo ASC",
-            [$id_u, $id_u, $km_ret - $MARGEN, $km_sal, $MARGEN]  // T2 >= km_retorno - MARGEN
+            [$id_u, $id_u, max(0, $km_ret - $MARGEN)]
         );
 
         foreach($tanqueos_candidatos as $t){
@@ -2238,14 +2238,15 @@ function run_assignment_viaje(int $id_ctrl, int $id_u, float $km_sal, float $km_
 
     } else {
         // Viaje en curso: buscar tanqueo muy cercano a la salida
+        $km_sal_max = $km_sal + $MARGEN;
         $tanq_inicio = qone(
             "SELECT id_combustible, km_vehiculo, 1 AS tanqueo, 'INICIO' AS relacion
              FROM compra_combustible
              WHERE id_unidad=? AND tipo_combustible='PETROLEO' AND tanqueo=1
                AND km_vehiculo IS NOT NULL
-               AND km_vehiculo >= ? AND km_vehiculo <= ? + ?
+               AND km_vehiculo >= ? AND km_vehiculo <= ?
              ORDER BY km_vehiculo ASC LIMIT 1",
-            [$id_u, $km_sal, $km_sal, $MARGEN]
+            [$id_u, $km_sal, $km_sal_max]
         );
         if($tanq_inicio) $candidatas[] = $tanq_inicio;
     }
