@@ -1314,8 +1314,8 @@ if($r0==='mantenimiento'){
         $costo_mo=(float)($d['costo_mano_obra']??0);
         if(!$d['id_unidad']||!$d['fecha_ejecucion']||!$d['tipo_mantenimiento'])
             jout(['error'=>'Campos obligatorios: id_unidad, fecha_ejecucion, tipo_mantenimiento'],400);
-        $id=qexec('INSERT INTO historial_mantenimiento(id_unidad,fecha_ejecucion,tipo_mantenimiento,tipo_mant_categoria,id_plan,km_registro,horometro_registro,descripcion_trabajo,marca,costo_repuestos,costo_mano_obra,costo_total_soles)VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
-            [$d['id_unidad'],$d['fecha_ejecucion'],$d['tipo_mantenimiento'],$cat,$id_plan,$d['km_registro']??null,$d['horometro_registro']??null,$d['descripcion_trabajo']??'',$d['marca']??null,$costo_rep,$costo_mo,round($costo_rep+$costo_mo,2)]);
+        $id=qexec('INSERT INTO historial_mantenimiento(id_unidad,fecha_ejecucion,tipo_mantenimiento,tipo_mant_categoria,id_plan,km_registro,horometro_registro,descripcion_trabajo,marca,costo_repuestos,costo_mano_obra)VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+            [$d['id_unidad'],$d['fecha_ejecucion'],$d['tipo_mantenimiento'],$cat,$id_plan,$d['km_registro']??null,$d['horometro_registro']??null,$d['descripcion_trabajo']??'',$d['marca']??null,$costo_rep,$costo_mo]);
         jout(['id_mantenimiento'=>(int)$id],201);
     }
     if($r1==='historial'&&$r2!==''&&$m==='PUT'){
@@ -1323,8 +1323,8 @@ if($r0==='mantenimiento'){
         $cat=$d['tipo_mant_categoria']??'CORRECTIVO';
         $costo_rep=(float)($d['costo_repuestos']??0);
         $costo_mo=(float)($d['costo_mano_obra']??0);
-        qrows('UPDATE historial_mantenimiento SET id_unidad=?,fecha_ejecucion=?,tipo_mantenimiento=?,tipo_mant_categoria=?,km_registro=?,horometro_registro=?,descripcion_trabajo=?,marca=?,costo_repuestos=?,costo_mano_obra=?,costo_total_soles=? WHERE id_mantenimiento=?',
-            [$d['id_unidad'],$d['fecha_ejecucion'],$d['tipo_mantenimiento'],$cat,$d['km_registro']??null,$d['horometro_registro']??null,$d['descripcion_trabajo']??'',$d['marca']??null,$costo_rep,$costo_mo,round($costo_rep+$costo_mo,2),(int)$r2]);
+        qrows('UPDATE historial_mantenimiento SET id_unidad=?,fecha_ejecucion=?,tipo_mantenimiento=?,tipo_mant_categoria=?,km_registro=?,horometro_registro=?,descripcion_trabajo=?,marca=?,costo_repuestos=?,costo_mano_obra=? WHERE id_mantenimiento=?',
+            [$d['id_unidad'],$d['fecha_ejecucion'],$d['tipo_mantenimiento'],$cat,$d['km_registro']??null,$d['horometro_registro']??null,$d['descripcion_trabajo']??'',$d['marca']??null,$costo_rep,$costo_mo,(int)$r2]);
         jout(['ok'=>true]);
     }
     if($r1==='historial'&&$r2!==''&&$m==='DELETE'){
