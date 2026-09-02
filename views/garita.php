@@ -39,7 +39,7 @@ $horaAhora = date('H:i');
     <label>Actividad
       <select id="f-act" onchange="cargarViajes()">
         <option value="">Todas</option>
-        <option>ACOPIO</option><option>LOGISTICA</option><option>AGUA</option><option>MANTENIMIENTO</option>
+        <option>ACOPIO</option><option>LOGISTICA</option><option>AGUA</option><option>RELAVERA</option><option>MANTENIMIENTO</option>
       </select>
     </label>
     <button class="btn btn-outline btn-sm" onclick="exportarViajes()">Excel</button>
@@ -174,7 +174,7 @@ $horaAhora = date('H:i');
           <label>Tipo de actividad</label>
           <select id="mv-act">
             <option value="">Seleccionar…</option>
-            <option>ACOPIO</option><option>LOGISTICA</option><option>AGUA</option>
+            <option>ACOPIO</option><option>LOGISTICA</option><option>AGUA</option><option>RELAVERA</option><option>MANTENIMIENTO</option>
             <option>MANTENIMIENTO</option><option>VENTA DE MINERAL</option><option>PAD</option>
           </select>
         </div>
